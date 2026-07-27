@@ -1,0 +1,72 @@
+# =========================
+# 1. Data and Models (CRITICAL)
+# =========================
+# Ignore heavy directories to prevent accidental git tracking of large binary files
+data/
+data/*
+data/raw/
+data/preprocessed/
+data/predictions/
+models/
+models/*
+
+# Heavy extensions
+*.nii
+*.nii.gz
+*.npy
+*.npz
+*.pth
+*.pt
+*.bin
+*.safetensors
+*.tar
+*.tar.gz
+*.zip
+
+submission_*.zip
+
+# =========================
+# 2. Environments and Credentials
+# =========================
+# Local environment credentials & overrides (NEVER upload to GitHub)
+.env
+
+# Virtual environments
+.venv/
+.venv-voxtell/
+venv/
+env/
+voxtell_env/
+
+# IDE configurations
+.vscode/
+.idea/
+*.code-workspace
+
+# Bash scripts used for SLURM job submission
+bash_scripts/
+
+# Agentic rules & governance
+.agents/*
+!.agents/shared/
+!.agents/AGENTS.md
+
+# =========================
+# 3. Cache, Artifacts & Logs
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.pytest_cache/
+slurm-out
+
+# Training telemetry & execution logs
+wandb/
+logs/*
+!logs/phase_2_inference_audit/
+!logs/phase_3_fine_tuning/
+checkpoints/
+nohup.out
+screenlog.0
+*.pid

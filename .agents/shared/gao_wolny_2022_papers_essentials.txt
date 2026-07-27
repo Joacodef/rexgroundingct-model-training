@@ -1,0 +1,491 @@
+# Wolny et al. 2022: Operational Digest
+
+> Excerpt from the paper "Sparse Object-level Supervision for Instance Segmentation with Pixel Embeddings" (Wolny, Yu, Pape, Kreshuk. EMBL Heidelberg. CVPR 2022). Code: `github.com/kreshuklab/spoco`.
+>
+> The proposed method is called **SPOCO** (SParse Object COnsistency loss). This paper is one of the two explicit references cited in ReXGroundingCT as a direction for handling partial annotations.
+
+---
+
+## 1. Why this paper is relevant to ReXGroundingCT
+
+The problem Wolny addresses is exactly analogous to the partial annotation problem in the ReXGroundingCT training set:
+
+- In Wolny: the annotator segments some objects in the image and leaves the rest unannotated (neither marked as background nor as object).
+- In ReXGroundingCT: the annotator segments up to 3 instances per finding and leaves the rest of the volume "ambiguous" — more instances of that finding may exist without being segmented.
+
+The technical term for this setting is **Positive-Unlabeled (PU) supervision**: you have some labeled positives, but the unlabeled ones are a mix of true positives (unannotated instances) and negatives (real background).
+
+The key conceptual contribution of Wolny applicable to our case:
+1. **Do not apply supervised loss in unannotated regions**, because you do not know whether they are background or unannotated instances.
+2. **Replace that supervision with a consistency loss** that leverages the structural information of unannotated regions without assuming their label.
+
+This is directly translatable to a fine-tune of VoxTell on ReXGroundingCT: do not penalize the model for predicting lesions outside the annotated ROIs, and instead use consistency regularization on those regions.
+
+---
+
+## 2. The formal problem
+
+Given a set of images where only a subset of instances per image has annotated masks, and the remaining pixels have no label (neither positive nor negative), train an instance segmentation model.
+
+Limitations of previous approaches:
+- Proposal-based methods (Mask R-CNN) require pre-training on large datasets, unavailable in medical imaging.
+- Typical semi-supervised methods require at least a subset of images to be FULLY annotated — a major obstacle for images with hundreds of objects.
+- Prior PU learning methods (classification, semantic segmentation) assume pseudo-label propagation or class prior estimation, which does not scale to instance segmentation.
+
+What Wolny proposes: PU learning for instance segmentation, with no need for pseudo-labels or prior estimation.
+
+---
+
+## 3. The core idea: SPOCO
+
+The method has three components, ordered by importance for adaptation:
+
+### 3.1. Differentiable instance-level loss (full supervision)
+
+Builds on a standard discriminative loss (De Brabandere 2017) that projects pixels into a D-dimensional embedding space with two forces:
+- **Pull force**: attracts pixels of the same object toward the mean of their embedding.
+- **Push force**: separates the embedding means of different objects.
+
+What is new in Wolny is that on top of this they define a **differentiable mechanism to extract a "soft mask" for a specific object**:
+1. Select an anchor point on the object (within the annotation).
+2. Project that anchor into the embedding space → obtain the anchor embedding.
+3. Compute the distance of each pixel to the anchor in the embedding space.
+4. Apply a Gaussian kernel to convert distance into a value between 0 and 1 → soft mask.
+
+Once they have the soft mask, they apply **Dice loss directly at the instance level** against the ground truth of that object. This is what makes the loss truly "object-level" and distinguishes their method from prior approaches.
+
+Key equations (paraphrased):
+- Soft mask: `S_k(i) = exp(-‖e_i − a_k‖² / (2σ²))` where `a_k` is the anchor embedding of object k.
+- Instance loss: `L_obj = (1/C) Σ Dice(S_k, GT_k)` over the C annotated objects.
+- Full supervision total loss: `L_SO = α·L_pull + β·L_push + λ·L_obj` with α=β=λ=1.
+
+**Applicability to ReXGroundingCT**: The soft mask mechanism is not directly translatable to VoxTell (which does not use pixel embeddings, producing masks directly). But the **principle** — applying loss only over annotated instances instead of over the entire volume — is translatable. In our case this would mean computing Dice/BCE only within a dilated ROI around each annotated instance.
+
+### 3.2. Weak supervision: push on unlabeled + consistency loss
+
+When you only have a subset of annotated objects, Wolny adds two loss terms:
+
+**Unlabeled push (`L_U_push`)**:
+Pushes the means of annotated clusters away from pixels in the unannotated region. Mathematically it is the standard push force but extended to all unlabeled pixels.
+
+**Consistency loss (`L_U_con`)** — the truly novel part:
+- Uses two networks: `f` (trained by backprop) and `g` (updated as an exponential moving average of `f`).
+- Passes two augmented views of the same image through both networks.
+- Samples anchors in the unannotated region and extracts soft masks with both networks.
+- Minimizes the Dice loss between the two soft masks.
+
+The intuition: the same pixel (with different augmentations) should belong to the same object in both networks. This propagates structural information into unannotated regions without assuming any specific label.
+
+Total weak supervision loss: `L_SSO = L_SO + γ·L_U_push + δ·L_U_con` with γ=δ=1.
+
+**Applicability to ReXGroundingCT**: This is the most translatable part. Concretely:
+- Student network: the model being fine-tuned (fine-tuned VoxTell).
+- Teacher network: EMA of the student, updated with momentum ~0.999.
+- For each batch: pass the same image with two different augmentations through student and teacher.
+- Supervised loss: only in ROIs around annotated instances.
+- Consistency loss: in the rest of the volume, penalize the discrepancy between student and teacher predictions.
+
+### 3.3. Inference clustering
+
+Four variants are proposed: HDBSCAN, Mean-shift, "consistency clustering" (hybrid), and "affinity-based" (Mutex Watershed on graph).
+
+**Not applicable to ReXGroundingCT**: VoxTell produces dense masks directly, not embeddings that require clustering. Our post-processing is connected components + size filtering. We skip this section.
+
+---
+
+## 4. Important experimental findings
+
+Although the experiments are on microscopy and Cityscapes (not radiological medical imaging), there are several transferable findings:
+
+### The consistency loss is the most important
+In the ablation (Table 10 of the paper), removing `L_U_con` degrades performance more than removing `L_U_push` at all sparsity levels. At 10% annotated instances, removing `L_U_con` drops Dice from 0.788 to 0.720. This is the strongest signal: **the consistency loss over unlabeled regions is the critical component**.
+
+### Momentum teacher >> other variants
+They tested 4 variants for network `g` (weight-shared, dropout, trained separately, momentum). Momentum with `m=0.999` wins by a wide margin (Table 12). Mean ± SD much lower than other variants, indicating training stability.
+
+### Sparse labeling > dense labeling (with fixed budget)
+If you have a fixed budget of objects to annotate (e.g. 16 objects), it is better to distribute them sparsely across many images than densely across few images. At Dice level, the difference in CVPPP is dramatic: 0.380 (dense) vs 0.691 (sparse) with the same budget.
+
+**Implication for ReXGroundingCT**: the ReXGroundingCT authors' decision to annotate up to 3 instances across many scans (partial protocol) instead of exhaustively annotating few scans is the correct decision by empirical evidence. Your loss should leverage this diversity rather than fight against it.
+
+### Consistency regularization also helps under full supervision
+In Table 11, adding `L_U_con` even with full supervision improves results on Cityscapes (from 0.418 to 0.459 mAP@0.5). This suggests that the consistency loss acts as a general regularizer, not only as a substitute for missing supervision.
+
+### The loss works well in transfer learning
+Trained on Ovules and fine-tuned with only 1–5% of instances on Stem cells (another dataset), it achieves a substantial reduction in error. This is analogous to our case: VoxTell pre-trained with a lot of data, fine-tuned on ReXGroundingCT where annotations are partial.
+
+---
+
+## 5. What is applicable to fine-tuning VoxTell on ReXGroundingCT
+
+### Applicable (with adaptation)
+
+1. **Masked loss over annotations**: compute the supervised loss only inside dilated ROIs around annotated instances. Direct adaptation of Wolny's principle.
+
+2. **Teacher EMA + consistency loss**: maintain an EMA copy of the model (momentum ~0.999) as a "teacher", and add a loss term that penalizes the discrepancy between student and teacher in regions outside the annotated ROIs. This is the strongest adaptation from the paper.
+
+3. **Different augmentations for student and teacher**: important that the two views are genuinely different. In 3D volumetric, things like axial flips + intensity jitter are natural.
+
+4. **Weighting**: the paper uses γ=δ=1 for the weak terms. We should start with similar weights and adjust via ablation.
+
+### NOT directly applicable
+
+1. **Pixel embeddings**: VoxTell does not produce embeddings, it produces masks. The entire soft mask machinery via Gaussian kernel does not apply.
+
+2. **Clustering at inference**: irrelevant for the same reason.
+
+3. **PU push term**: the term pushing embeddings away from unlabeled pixels has no direct analog without embeddings.
+
+4. **Specific hyperparameters**: δ_v = 0.5, δ_d = 2.0, t = 0.9 belong to the embedding space and do not translate.
+
+---
+
+## 6. Method limitations according to the authors
+
+- There is no universal clustering that works well across all datasets. Each dataset requires clustering hyperparameter tuning. For us this is irrelevant, but it shows the method is not "plug-and-play".
+- The method was tested on 2D and 3D, microscopy and street scenes. There is no direct validation on 3D radiology, which is our context.
+- They do not mention what happens when the density of instances in the unlabeled region is very different from that in the labeled region. In ReXGroundingCT the unlabeled region can have 0–30 additional instances depending on the case, which could complicate the naive use of consistency.
+
+---
+
+## 7. Useful implementation details
+
+Although the specific architecture (U-Net with pixel embeddings) is not ours, some training details are adaptable:
+
+| Parameter | Value | Applicability |
+|---|---|---|
+| Optimizer | Adam, β1=0.9, β2=0.999 | Relevant if switching from SGD |
+| Initial LR | 2×10⁻⁴ | Reference |
+| Fine-tune LR (transfer) | 2×10⁻⁵ (reduced 10×) | Relevant — suggests lowering LR in fine-tune |
+| Weight decay | 10⁻⁵ | Reference |
+| Momentum m (EMA teacher) | **0.999** | Critical — high values work better |
+| Embedding space dim | 16 | Not applicable |
+| Augmentations for teacher | flips, scaling, Gaussian blur, color jitter | Adapt to 3D: flips, elastic deformation, intensity jitter |
+| Consistency loss weight | 1.0 | Reference, adjust with ablation |
+
+---
+
+## 8. Cheatsheet for translating to our setup
+
+```
+Adapting the SPOCO principle to VoxTell fine-tune:
+
+1. Keep the fine-tuned VoxTell model as "student".
+2. Create a teacher copy as EMA:
+   θ_teacher = m · θ_teacher + (1−m) · θ_student,  m = 0.999
+3. For each sample:
+   - Pass the image with augmentation_A through student.
+   - Pass the image with augmentation_B (different) through teacher (no backprop).
+4. Define ROI_annotated: volume covered by annotated instances, ideally dilated.
+5. Supervised loss: only inside ROI_annotated.
+   - DiceCE(pred_student ∩ ROI_annotated, GT ∩ ROI_annotated)
+6. Consistency loss: outside ROI_annotated.
+   - Dice(pred_student · (1 − ROI_annotated), pred_teacher · (1 − ROI_annotated))
+7. Total loss: L = L_supervised + γ · L_consistency,  γ ≈ 1.0
+```
+
+This is not a ready-to-run implementation — it is a working template. Still to be decided:
+- How exactly to build the ROI (dilation size in voxels).
+- What augmentations to use to generate the two views.
+- Whether to apply consistency on the logit, the probability, or the binarized mask.
+- Whether to warm up weight γ from 0 at the start of training (analogous to what is done with the critic in WGAN).
+
+These are exactly the points that should appear as experiments in your paper.
+
+---
+
+## 9. Possible derived contributions
+
+Wolny's paper is about instance segmentation via pixel embeddings. Adapting it to free-text-guided segmentation in volumetric CT is unexplored territory. Several publishable directions:
+
+1. **Direct adaptation**: report how SPOCO is adapted to fine-tuning text-guided models (VoxTell), documenting the specific design choices of the adaptation.
+
+2. **Consistency variant**: the paper uses Dice over embedding soft masks. In our case a consistency over the continuous logit (MSE or KL) might be more appropriate than over the binarized mask.
+
+3. **Category-adaptive ROI**: Wolny assumes the ROI of each instance is simply its annotated mask. In ReXGroundingCT the 14 categories have very different sizes (orders of magnitude). Perhaps the ROI dilation should be finding-type-dependent (more conservative for small nodules, more generous for diffuse ones).
+
+4. **Interaction with the text prompt**: the consistency loss in Wolny is prompt-agnostic. But if the prompt is part of the input, consistency should be conditional on the prompt — perhaps even sampling different prompts to enforce semantic as well as spatial consistency.
+
+The strongest angle for your thesis probably combines 1+3: "adapting SPOCO to the text-guided context with category-dependent dilated ROI".
+
+---
+
+## 10. References in the paper to cross-check
+
+- **De Brabandere et al. 2017** (ref [6]): the original discriminative loss. Foundation of Wolny's method. Worth reading to understand the embedding space formulation.
+- **Mean Teachers** (Tarvainen & Valpola 2017, ref [49]): the origin of the momentum teacher idea. Cite in your paper if you implement this.
+- **MoCo** (He et al. 2020, ref [22]): the momentum contrastive learning that inspired the use of momentum in Wolny. Also citable.
+- **Gao et al. 2022** (not a direct reference of Wolny, but the other paper cited by ReXGroundingCT for partial annotations): worth reading in parallel to see a different approach.
+
+
+
+
+# Gao et al. 2022: Operational Digest
+
+> Excerpt from the paper "Segmentation only uses sparse annotations: Unified weakly and semi-supervised learning in medical images" (Gao, Hu, Zhong et al., Medical Image Analysis 80, 2022).
+>
+> The proposed method is called **SOUSA** (Segmentation Only Uses Sparse Annotations). It is the second of the two references cited in ReXGroundingCT as a direction for handling partial annotations. It complements Wolny 2022 with a different but compatible approach.
+
+---
+
+## 1. Why this paper is relevant to ReXGroundingCT
+
+Gao addresses a slightly different setting from Wolny, but the technical apparatus is directly applicable to VoxTell fine-tuning:
+
+- In Gao: some images have scribble annotations (sparse marks instead of dense masks) and other images are completely unannotated. They call this **WSCL: Weakly- and Semi-Supervised Consistency Learning**.
+- In ReXGroundingCT: all training images have partial annotations (maximum 3 instances per finding), which is analogous to having scribbles in the sense that supervision is incomplete.
+
+**Key advantage of Gao over Wolny for our case:** SOUSA operates directly on segmentation masks (model output), does not require pixel embeddings. This makes it **much easier to integrate with VoxTell**, which already produces dense masks directly.
+
+Main applicable conceptual contributions:
+1. **Teacher-student with mean teacher** (same as Wolny).
+2. **MPR loss**: a new type of consistency loss specifically designed to amplify errors in regions far from the main prediction — useful when there are dispersed false positives or unannotated instances in the volume.
+3. **Ramp-up function** for the consistency loss weight: a critical implementation detail that Wolny does not make explicit.
+
+---
+
+## 2. The formal problem
+
+**Gao's setting (WSCL):**
+- Labeled dataset `D_L`: NL images with scribbles (sparse annotations).
+- Unlabeled dataset `D_U`: NU completely unlabeled images, with NU >> NL.
+- Objective: train a segmentation model with both.
+
+**Distinction from Wolny:**
+- Wolny: positive-unlabeled within the same image (some instances labeled, others not).
+- Gao: some complete images have scribbles, other complete images have nothing.
+
+**Adaptation to ReXGroundingCT:**
+- Our case is a hybrid of both. All images have some supervision (at least the annotated instances), but supervision is incomplete even within each image. We can take components from both papers.
+- The most adaptable part of Gao is the consistency framework and the MPR loss. The scribbles + geodesic distance map part does not apply.
+
+---
+
+## 3. The core idea: SOUSA
+
+The method has three components. For our case the relevant ones are the second and third.
+
+### 3.1. Supervision with scribbles (NOT directly applicable)
+
+Two complementary tasks in the network:
+1. **Segmentation head** supervised by scribbles with Partial Cross-Entropy (PCE), which only computes loss over scribbled pixels and ignores the rest.
+2. **Auxiliary regression head** that predicts a geodesic distance map derived from the scribble. The geodesic map takes into account both spatial distance and intensity similarity, giving the model information about "where it should be looking".
+
+**Why it does NOT apply to ReXGroundingCT:** you have full masks for annotated instances, not scribbles. The geodesic map part has no direct analog in our case. The supervised loss for you is standard DiceCE applied only to annotated ROIs, not PCE.
+
+However, there is a transferable conceptual lesson: **using an auxiliary regression task can help the model focus on the region of interest**. In our case, an auxiliary task could be regressing the distance to the finding centroid, or the probability of presence of any lesion (task-agnostic heatmap).
+
+### 3.2. Mean teacher + MSE consistency (directly applicable)
+
+Identical in spirit to Wolny but with simpler implementation:
+- One network `f(·, θ)` student, another network `f(·, θ̄)` mean teacher.
+- θ̄ is updated as the exponential moving average of θ.
+- For unlabeled images: pass the image with two different augmentations through student and teacher.
+- MSE consistency loss over dense predictions.
+
+Important parameter: the **smoothing coefficient** δ for EMA is defined as `δ = min{1 − 1/(t+1), 0.99}`. That is, it starts close to 0 (teacher changes fast early on) and asymptotically grows to 0.99. This differs from Wolny's fixed m=0.999. Both approaches work; Gao's is more conservative at the start of training.
+
+**Applicability to ReXGroundingCT:** direct. Same framework as Wolny, with the advantage of working on dense masks directly, not on embeddings.
+
+### 3.3. MPR loss: Multi-angle Projection Reconstruction (the novel contribution)
+
+This is the most original contribution and potentially the most valuable for our case.
+
+**Motivation:** the standard MSE loss is insensitive to small errors far from the main prediction. If there is a false positive in a region of the volume completely separated from the real instance, MSE penalizes it very weakly. Dice loss also does not capture it well. With partial annotations, **dispersed false positives are exactly the problem you need to manage**.
+
+**Formulation:**
+1. Take the student predictions (ŷ_θ) and teacher predictions (ŷ_θ̄).
+2. Rotate both by the same random angle φ.
+3. Project each along the horizontal and vertical axes using `max` (max-projection).
+4. Compute Dice loss between the student and teacher projections.
+5. Repeat with Nrot different angles and average.
+
+**Intuition:** when projecting with max, a small false positive far from the main prediction appears as a separate peak in the projection. The Dice loss on the projection is very sensitive to this peak, whereas in the original volume it was nearly invisible.
+
+**Key property (Figure 4 of the paper):** if you move a false positive from the center of the prediction to distant regions, MSE and Dice loss remain nearly constant, but MPR loss grows monotonically. This is exactly what you want for penalizing dispersed false positives.
+
+**Applicability to ReXGroundingCT:** very promising. In your case, during fine-tuning the model might produce false positives in regions of the volume where real but unannotated instances exist. The MPR loss applied to the student–teacher consistency could penalize spatial inconsistencies without forcing them to be "zero" (which would be incorrect if there is actually a lesion there). It is a softer approach than "mask the loss completely".
+
+**Practical consideration:** the paper applies it in 2D with 9 rotations. For 3D volumetric, one would need to decide whether to rotate on all 3 axes or only 2 (computationally cheaper and probably sufficient in thoracic CT).
+
+---
+
+## 4. Important experimental findings
+
+The paper experiments on ACDC (cardiac, cine-MRI) and on a proprietary colon cancer dataset. Although it is not thoracic radiology, there are transferable findings.
+
+### Semi-supervision provides the biggest jump
+In the ablation (Table 1 of the paper), adding the MSE consistency loss over unlabeled data improves Dice from 50.26% to 65.29% (+15 points). This is the highest-impact component. MPR loss contributes another +2.34%. Multi-task regression (geodesic) contributes +14% but is specific to the scribble setting, not applicable to us.
+
+### Optimal Nrot is 9, not more
+They tested Nrot ∈ {1, 3, 9, 27} (Table 2). The optimal point is 9. With 27 rotations performance drops. Interpretation: too many rotations dilute the signal when averaging.
+
+### MPR loss is robust to β
+In the hyperparameter ablation (Figure 6b), β (MPR weight in the total loss) varies from 0.01 to 0.5 without much degradation. The paper uses β = 0.1. This robustness is useful: you will not need to do a fine-grained weight search.
+
+### Ramp-up function
+They use `γ(t) = exp(-5 · (1 - t/T)²)` for the consistency loss weight. Starts near 0 and rises to 1 at the end of training. The idea: at the beginning the student knows nothing useful, so consistency with the teacher (which is also garbage initially) would add noise. As the model converges, consistency becomes informative.
+
+**Applicability:** directly usable. Any consistency loss implementation should include this warmup.
+
+### Sparse + unlabeled outperforms sparse alone
+With only 20% of labeled data (scribbles) + the rest unlabeled, SOUSA achieves 79.54% Dice vs 78.94% for the dense supervised baseline. **This suggests that the partial annotation regime with consistency regularization can achieve competitive performance with dense supervision.**
+
+Extrapolating to ReXGroundingCT: if SOUSA can close the gap between sparse and dense in ACDC, a similar approach should allow us to close the gap between "loss only in annotated ROIs" and "loss in the hypothetically complete mask".
+
+### Comparison with other SSL methods
+Table 3 compares with Self-training, ICT, Uncertainty-aware, CPS. SOUSA wins in Dice at all labeled ratios. In particular it wins more when there is less labeled data (Figure 7).
+
+---
+
+## 5. What is applicable to fine-tuning VoxTell on ReXGroundingCT
+
+### Directly applicable
+
+1. **Mean teacher framework** with EMA update. Same as Wolny. Both papers use it — strong signal that it is the right approach.
+
+2. **MSE consistency loss** over dense predictions outside the annotated ROIs. Simpler to implement than the Wolny version (which requires embedding soft masks).
+
+3. **MPR loss**: potentially the most specific contribution for our case. Designed exactly to penalize dispersed false positives, which is the expected failure mode with partial annotations.
+
+4. **Ramp-up function** `γ(t) = exp(-5(1-t/T)²)` for the consistency loss weight. Important for training stability.
+
+5. **EMA with progressive smoothing coefficient** `δ = min{1 − 1/(t+1), 0.99}`.
+
+### Applicable with adaptation
+
+1. **Extension of MPR loss to 3D**: the paper uses it in 2D. For volumetric CT, the natural projections are axial, sagittal, coronal. One can generalize by rotating in each plane and projecting with max, or doing full 3D rotations (more expensive).
+
+2. **Auxiliary task**: the paper uses geodesic map regression. Not applicable as-is, but the idea of an auxiliary head regressing an "anatomical attention" map (e.g. distance to the lung, lesion probability map) could be useful.
+
+### NOT applicable
+
+1. **Partial Cross-Entropy (PCE) over scribbles**: your supervision consists of masks, not scribbles. Use DiceCE in annotated ROIs, not PCE.
+
+2. **Geodesic distance map from scribbles**: without scribbles there is no geodesic map.
+
+3. **Specific hyperparameters** (α = 5 for Lreg): specific to the scribble setting.
+
+---
+
+## 6. Method limitations according to the authors
+
+The authors are not very self-critical, but some implicit limitations:
+
+- The method was validated in 2D (ACDC and colon). There is no direct evidence that it scales well to 3D volumetric.
+- The datasets are homogeneous (cardiac: 4 fixed classes; colon: 1 class). In ReXGroundingCT you have 14 very different categories.
+- Segmentation in ACDC is of structures with relatively fixed shape (ventricles, myocardium). In our case lesions have highly variable shapes.
+- The dataset does not have a proper partial annotation problem. They simulate it with scribbles, but that is not exactly the same setting as ReXGroundingCT (where up to 3 complete instances are segmented and the rest may or may not exist).
+
+---
+
+## 7. Useful implementation details
+
+| Parameter | Value in Gao | Relevance for our case |
+|---|---|---|
+| Optimizer | SGD with momentum 0.9 | Consistent with VoxTell |
+| Weight decay | 10⁻⁴ | Reference |
+| Initial LR | 0.01 | High, probably due to SGD from scratch. We fine-tune, so lower LR. |
+| LR schedule | Decreasing per iteration | Generic |
+| Batch size | 24 | Not directly applicable in 3D |
+| α (Lreg weight) | 5 | Not applicable (no geodesic) |
+| β (Lmpr weight) | 0.1 | Suggested starting point for MPR |
+| Nrot | 9 | Empirical optimum |
+| EMA smoothing | δ = min(1−1/(t+1), 0.99) | Directly usable |
+| Ramp-up | exp(-5(1-t/T)²) | Directly usable |
+| Architecture | 2D U-Net | Replace with VoxTell backbone |
+
+---
+
+## 8. Cheatsheet for translating to our setup
+
+```
+Adapting the SOUSA principle to VoxTell fine-tune:
+
+1. Student: VoxTell model being fine-tuned.
+2. Teacher: EMA of student with δ_t = min(1 − 1/(t+1), 0.99).
+3. For each training image:
+   a. Pass it with augmentation_A through student (with backprop).
+   b. Pass it with augmentation_B through teacher (no backprop).
+4. Supervised loss:
+   - DiceCE over ROIs around annotated instances (student).
+5. Consistency loss (all regions or only outside ROI):
+   L_mse = MSE(pred_student, pred_teacher)
+   L_mpr = MPR(pred_student, pred_teacher, Nrot=9)
+   L_consistency = L_mse + 0.1 · L_mpr
+6. Total loss:
+   L = L_supervised + γ(t) · L_consistency
+   where γ(t) = exp(-5(1 − t/T)²)
+
+MPR implementation in 3D (proposal):
+   For each φ ∈ {Nrot angles}:
+     Rotate both predictions in the axial plane by φ
+     Project with max along X and Y axes (yields 2D projections per channel)
+     Compute Dice loss between projections
+   Average over Nrot rotations
+   (Optional: extend rotations to sagittal and coronal planes as well)
+```
+
+---
+
+## 9. Direct comparison Wolny vs Gao
+
+This table should help decide which components to take from each.
+
+| Aspect | Wolny (SPOCO) | Gao (SOUSA) |
+|---|---|---|
+| Setting | Positive-unlabeled within the image | Weakly + Semi: scribbles in some images, nothing in others |
+| Base supervision | Pixel embeddings + discriminative loss | Segmentation masks + PCE |
+| Model output | Embeddings, requires clustering | Dense masks directly |
+| Mean teacher | Yes, momentum m = 0.999 | Yes, EMA with adaptive δ |
+| Consistency loss | Dice over embedding soft masks | MSE + MPR over dense masks |
+| Auxiliary task | No | Yes (geodesic regression) |
+| Complexity | Higher (embeddings + clustering) | Lower (works on direct outputs) |
+| Applicability to VoxTell | Medium (requires reformulation as embeddings) | **High (direct on masks)** |
+
+**Synthesis recommendation for your contribution:**
+- Base framework: mean teacher (common to both).
+- Consistency loss: **Gao's MPR** as the main term, potentially complemented by MSE for stability. MPR targets exactly the failure mode of partial annotations.
+- EMA hyperparameters: start with Gao's adaptive schedule, test Wolny's fixed momentum 0.999 in ablation.
+- Consistency weight ramp-up: use Gao's formula from the start.
+- DO NOT use: Wolny's embeddings (unnecessary complexity), Gao's geodesic (no scribbles).
+
+---
+
+## 10. Possible derived contributions
+
+Gao's paper is 2D and on datasets with fixed classes (ACDC: 4 classes, Colon: 1 class). Adapting it to 3D volumetric text-guided is open territory. Publishable directions:
+
+1. **3D MPR loss**: the generalization of MPR to volumes is non-trivial and does not exist in the literature. Publishable as a technical contribution.
+
+2. **Prompt-conditioned MPR**: in VoxTell each prediction depends on a different text prompt. The MPR loss could be conditional on the prompt — perhaps weighting projections according to the finding category.
+
+3. **Per-category MPR**: the 14 finding types have very different spatial characteristics. Ground-glass is diffuse, honeycombing is dense and localized. The consistency loss could be parameterized per category.
+
+4. **Wolny + Gao combination**: both papers use mean teacher but with different consistency losses. An ablation combining Wolny's L_con (embedding-based) with Gao's MPR (output-based) can reveal whether they are complementary.
+
+The strongest angle for your thesis is probably **adapting MPR loss to 3D text-guided segmentation with partial annotations**, with the narrative: "we adapt SOUSA to the volumetric multimodal context, showing that a projection-based consistency loss is particularly effective when training annotations are incomplete".
+
+---
+
+## 11. References in the paper to cross-check
+
+- **Mean Teacher** (Tarvainen & Valpola 2017): foundation of the framework. Also referenced by Wolny.
+- **Interpolation Consistency Training (ICT)** (Verma et al. 2019, ref): SSL baseline that SOUSA surpasses. Useful for situating the contribution in the literature.
+- **Uncertainty-aware self-ensembling** (Yu et al. 2019): another SSL baseline, specific to medical imaging. Could be relevant if you explore uncertainty estimation.
+- **DeepIGeos** (Wang et al. 2019, ref [Wang2019]): the paper from which the geodesic distance map comes. Irrelevant for us, only if you are interested in the auxiliary task.
+- **Cross Pseudo Supervision (CPS)** (Chen et al. 2021): alternative to mean teacher, two networks that supervise each other. Mentioned as a comparison.
+
+---
+
+## 12. Operational conclusion
+
+For your work, Gao provides two specific things that Wolny does not:
+1. **The MPR loss**, which is a genuinely novel idea applicable to the problem of false positives in unannotated regions.
+2. **Practical training details** (ramp-up, EMA schedule) that are not explicit in Wolny.
+
+Wolny contributes on its side:
+1. **The formalization of the PU problem** in terms of segmentation, which is directly the framing of ReXGroundingCT.
+2. **Empirical evidence that sparse > dense with fixed budget**, which justifies the dataset protocol.
+
+The optimal approach is to take from Gao the technical apparatus (mean teacher + MPR + ramp-up) and from Wolny the conceptual framing (positive unlabeled, consistency over unannotated regions). This synthesis is precisely what you could articulate as your methodological contribution.

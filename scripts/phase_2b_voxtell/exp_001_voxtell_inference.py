@@ -38,7 +38,7 @@ from voxtell.inference.predictor import VoxTellPredictor
 from nnunetv2.imageio.nibabel_reader_writer import NibabelIOWithReorient
 
 sys.path.append(os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
-from scripts.voxtell.prompt_normalizer import clean_finding_prompt
+from scripts.common.prompt_normalizer import clean_finding_prompt
 
 def main():
     # Parse CLI arguments for split selection

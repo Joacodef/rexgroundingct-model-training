@@ -8,12 +8,12 @@ from monai.transforms import Compose, LoadImaged, Orientationd, Spacingd, SaveIm
 from monai.data import Dataset, DataLoader, decollate_batch
 
 # Configure logging
-os.makedirs("logs", exist_ok=True)
+os.makedirs("logs/common", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("logs/preprocess.log", mode="a", encoding="utf-8"),
+        logging.FileHandler("logs/common/preprocess.log", mode="a", encoding="utf-8"),
         logging.StreamHandler()
     ]
 )

@@ -112,7 +112,7 @@ The authors provide a complementary **Chain-of-Thought (CoT) reasoning dataset**
 * Clicking any submission row on `rexrank.ai` reveals an interactive per-category metric breakdown across all 14 finding classes.
 
 ### Important Note on Hit Rate Threshold
-The official challenge Hit Rate uses **Dice $\ge 0.1$** as the matching threshold. The VoxTell paper reports $HIT_{5\%}$ (threshold 0.05), which is different. Local evaluation loops in `scripts/evaluate.py` enforce the official 0.1 threshold.
+The official challenge Hit Rate uses **Dice $\ge 0.1$** as the matching threshold. The VoxTell paper reports $HIT_{5\%}$ (threshold 0.05), which is different. Local evaluation loops in `scripts/common/evaluate.py` enforce the official 0.1 threshold.
 
 ---
 
@@ -223,6 +223,6 @@ General challenge contact: `MohammedSalimAB@outlook.com`
 
 1. **50% Public / 50% Private Leaderboard Split**: Leaderboard scores reflect only half the test set. Overfitting to the public 50% risks performance degradation on the final private evaluation. Solid local cross-validation is essential.
 2. **Chain-of-Thought (CoT) Prompting Leverage**: The availability of GPT-4o-generated CoT reasoning traces anchored to anatomical coordinates provides an additional textual grounding mechanism to experiment with during baseline fine-tuning.
-3. **Output Format (F, H, W, D)**: Predictions must stack individual 3D finding segmentations into a single 4D volume per CT scan, maintaining exact correspondence with the GT finding sequence. Verify local outputs using `scripts/evaluate.py`.
+3. **Output Format (F, H, W, D)**: Predictions must stack individual 3D finding segmentations into a single 4D volume per CT scan, maintaining exact correspondence with the GT finding sequence. Verify local outputs using `scripts/common/evaluate.py`.
 4. **Google Drive Submission Portal**: Predictions are submitted via a shared Google Drive link in the web portal. Form fields require a designated Model Name and verified team members (Name + Affiliation).
 5. **Co-authorship Limit**: Top-3 placement qualifies up to 8 team members for co-authorship on the official MICCAI challenge paper.

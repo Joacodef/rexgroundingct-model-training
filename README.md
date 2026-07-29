@@ -20,22 +20,23 @@ rexgroundingct-model-training/
 │   ├── HANDSHAKE.md            # Tactical session bridge & transition handoff
 │   └── server_documentation.txt# Host server hardware setup & guides
 ├── logs/                       # Baseline audit & training execution logs
-│   ├── phase_2_inference_audit/ # Baseline audit logs & failure breakdown matrices
-│   ├── phase_3_fine_tuning/     # Mean Teacher fine-tuning proof-of-concept logs
-│   └── execution_raw/          # Detached execution logs and process IDs
+│   ├── common/                 # System logs and utility output
+│   ├── phase_2a_rule_based/    # Phase 2A non-neural baseline evaluation logs
+│   ├── phase_2b_voxtell/       # Phase 2B VoxTell zero-shot baseline audit logs
+│   └── phase_3_training/       # Phase 3 Mean Teacher fine-tuning logs
 ├── scratch/                    # Fine-tuning scratch scripts & evaluation tools
-│   ├── phase_2_inference_audit/ # Chunked inference & official pipeline verifiers
-│   └── phase_3_fine_tuning/     # Proof-of-concept training & diagnostic utils
 ├── scripts/                    # Core inference, training, & dataloading pipeline
 │   ├── config.py               # Dynamic path resolver (shared ../data/ and ../models/)
-│   ├── evaluate.py             # Official challenge metric evaluator (Dice & Hit Rate)
-│   ├── data_prep/
-│   │   └── preprocess.py       # MONAI patch cropping, text cache, & volume processing
-│   └── voxtell/
-│       ├── prompt_normalizer.py# Radiology report prompt normalization
-│       ├── voxtell_inference.py# Zero-shot sliding window inference & 4D Back-Reorientation
-│       └── training/
-│           └── train_mean_teacher.py # PyTorch Mean Teacher + PU SPOCO fine-tuning trainer
+│   ├── common/                 # Shared pipelines & utilities
+│   │   ├── evaluate.py         # Official challenge metric evaluator (Dice & Hit Rate)
+│   │   ├── preprocess.py       # MONAI patch cropping, text cache, & volume processing
+│   │   └── prompt_normalizer.py# Radiology report prompt normalization
+│   ├── phase_2a_rule_based/    # Phase 2A non-neural statistical baseline
+│   │   └── exp_001_seg_masks_priors.py # Empirical 3D spatial PDF baseline
+│   ├── phase_2b_voxtell/       # Phase 2B VoxTell baseline & zero-shot audit
+│   │   └── exp_001_voxtell_inference.py # VoxTell v1.1 sliding window inference
+│   └── phase_3_training/       # Phase 3 PyTorch semi-supervised fine-tuning
+│       └── exp_001_train_mean_teacher.py # Mean Teacher + PU SPOCO fine-tuning trainer
 ├── .env.example                # Environment variable configuration template
 ├── .env                        # Local environment settings (untracked by git)
 └── README.md                   # Primary repository documentation
@@ -61,19 +62,19 @@ pip install -r requirements/voxtell.txt
 ### 2. Zero-Shot Baseline Inference (Phase 2)
 Run sliding window inference with 4D Back-Reorientation on validation scans:
 ```bash
-python scripts/voxtell/voxtell_inference.py
+python scripts/phase_2b_voxtell/exp_001_voxtell_inference.py
 ```
 
 ### 3. Metric Evaluation
 Evaluate predicted 4D segmentation masks against ground-truth masks:
 ```bash
-python scripts/evaluate.py --gt_dir ../data/raw/segmentations --pred_dir ../data/predictions
+python scripts/common/evaluate.py --gt_dir ../data/raw/segmentations --pred_dir ../data/predictions
 ```
 
 ### 4. PyTorch Mean Teacher Fine-Tuning (Phase 3)
 Run persistent Mean Teacher fine-tuning with gradient clipping and float32 upcasting:
 ```bash
-WANDB_MODE=offline PYTHONUNBUFFERED=1 nohup python -u scripts/voxtell/training/train_mean_teacher.py --epochs 50 --wandb > logs/execution_raw/train_mean_teacher_50ep.log 2>&1 &
+WANDB_MODE=offline PYTHONUNBUFFERED=1 nohup python -u scripts/phase_3_training/exp_001_train_mean_teacher.py --epochs 50 --wandb > logs/phase_3_training/train_mean_teacher_50ep.log 2>&1 &
 ```
 
 ---

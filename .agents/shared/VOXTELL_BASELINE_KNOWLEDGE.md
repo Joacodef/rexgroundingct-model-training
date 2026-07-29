@@ -86,8 +86,6 @@ voxtell/
 
 ## 🛠️ 4. Fine-Tuning & Training Infrastructure
 
-Implementation: `scripts/voxtell/training/train_mean_teacher.py`
-
 1. **Text Embedding Pre-Caching**:
    * Qwen text embeddings are pre-computed offline via `precompute_text_cache` and saved to `data/text_cache/*.pt` (shape: `(F, 2560)`).
    * Eliminates the heavy 4B parameter text model from GPU memory during network fine-tuning.

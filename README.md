@@ -19,11 +19,14 @@ rexgroundingct-model-training/
 │   ├── STATUS.md               # Local active macro progress matrix
 │   ├── HANDSHAKE.md            # Tactical session bridge & transition handoff
 │   └── server_documentation.txt# Host server hardware setup & guides
-├── logs/                       # Baseline audit & training execution logs
-│   ├── common/                 # System logs and utility output
+├── logs/                       # Baseline audit & training execution logs (per-experiment subfolders)
+│   ├── common/                 # System logs and shared utility diagnostics
 │   ├── phase_2a_rule_based/    # Phase 2A non-neural baseline evaluation logs
+│   │   └── exp_001_seg_masks_priors/ # Dedicated experiment subfolder (eval.md, eval_results_val.json, run.log)
 │   ├── phase_2b_voxtell/       # Phase 2B VoxTell zero-shot baseline audit logs
+│   │   └── exp_001_voxtell_inference/
 │   └── phase_3_training/       # Phase 3 Mean Teacher fine-tuning logs
+│       └── exp_001_train_mean_teacher/
 ├── scratch/                    # Fine-tuning scratch scripts & evaluation tools
 ├── scripts/                    # Core inference, training, & dataloading pipeline
 │   ├── config.py               # Dynamic path resolver (shared ../data/ and ../models/)

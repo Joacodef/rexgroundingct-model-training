@@ -326,19 +326,35 @@ class EmpiricalSpatialPDFBaseline:
         else:
             pdf_target = pdf_np.copy()
 
-        # Category-Specific Threshold Calibration & Volume Constraints
+        # Category-Specific Calibrated Binarization Cutoffs (p_c)
         max_p = pdf_target.max()
         if max_p <= 0:
             return np.zeros(target_shape_ras, dtype=np.uint8)
 
-        if code in ["2d", "1e", "2a"]: # Focal Nodules / Micronodules / Linear Opacities
-            p_threshold = max(np.percentile(pdf_target[pdf_target > 0.001], 85) if (pdf_target > 0.001).any() else 0.05, 0.02)
-        elif code in ["2b", "2c", "1a", "1b", "1d"]: # Parenchymal Opacities / Thickening
-            p_threshold = max(np.percentile(pdf_target[pdf_target > 0.001], 65) if (pdf_target > 0.001).any() else 0.02, 0.01)
-        elif code in ["1c", "2e", "2g"]: # Large Volume (Emphysema, Effusion, Pneumothorax)
-            p_threshold = max(np.percentile(pdf_target[pdf_target > 0.001], 50) if (pdf_target > 0.001).any() else 0.01, 0.005)
-        else:
-            p_threshold = max(0.05 * max_p, 0.01)
+        # Calibrated category threshold factors (p_c = factor * max_p).
+        # DERIVATION: Derived from Phase 1 empirical cumulative density profiling and morphological 
+        # sphericity profiles (PHASE_1_DATA_ANALYSIS_SUMMARY.md). High-concentration basal/effusion 
+        # findings (max P_c in [0.15, 0.81]) use lower relative factors (0.30-0.35) to capture 
+        # extended fluid boundaries, whereas highly focal/compact spherical findings (max P_c in 
+        # [0.008, 0.05], e.g. Nodules 2d S=0.94) use higher factors (0.50) to isolate peak density cores.
+        CATEGORY_THRESHOLD_FACTORS = {
+            "1a": 0.35,  # Bronchial wall thickening (hilar/peribronchial)
+            "1b": 0.40,  # Bronchiectasis (airway tree)
+            "1c": 0.40,  # Emphysema (apical dominant)
+            "1d": 0.40,  # Septal thickening (interstitial)
+            "1e": 0.50,  # Micronodules (multi-focal clusters)
+            "1f": 0.40,  # Other non-focal
+            "2a": 0.50,  # Linear opacities (focal linear)
+            "2b": 0.35,  # Atelectasis / consolidation (basal dependent)
+            "2c": 0.35,  # Ground-glass opacity (patchy parenchymal)
+            "2d": 0.50,  # Pulmonary nodules / masses (focal spherical, S=0.94)
+            "2e": 0.30,  # Pleural effusion / thickening (basal dependent fluid)
+            "2f": 0.40,  # Honeycombing (subpleural basal)
+            "2g": 0.35,  # Pneumothorax (pleural boundary)
+            "2h": 0.40,  # Other focal
+        }
+        factor = CATEGORY_THRESHOLD_FACTORS.get(code, 0.40)
+        p_threshold = factor * max_p
 
         binary_mask = (pdf_target >= p_threshold).astype(np.uint8)
         
@@ -469,18 +485,18 @@ def main():
     # Automate Metric Evaluation via scripts/evaluate.py
     if args.eval and (generated_count > 0 or len(list(output_dir.glob("*.nii.gz"))) > 0):
         print("\n" + "=" * 80)
-        print("Invoking Official Evaluator (scripts/common/evaluate.py)...")
-        print("=" * 80)
-
-        eval_script = ROOT_DIR / "scripts" / "common" / "evaluate.py"
-        gt_dir = RAW_MASKS_DIR
+        exp_log_dir = LOGS_DIR / "phase_2a_rule_based" / "exp_001_seg_masks_priors"
+        exp_log_dir.mkdir(parents=True, exist_ok=True)
+        eval_json_path = exp_log_dir / f"eval_results_{args.split}.json"
+        log_path = exp_log_dir / "eval.md"
 
         cmd = [
             sys.executable, str(eval_script),
             "--gt_dir", str(gt_dir),
             "--pred_dir", str(output_dir),
             "--split", args.split,
-            "--dataset_json", args.dataset_json
+            "--dataset_json", args.dataset_json,
+            "--output_json", str(eval_json_path)
         ]
 
         print(f"Running command: {' '.join(cmd)}")
@@ -492,11 +508,7 @@ def main():
             print("--- Evaluation Warnings/Errors ---")
             print(result.stderr)
 
-        # Log results to markdown log file
-        log_dir = LOGS_DIR / "phase_2a_rule_based"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / "exp_001_seg_masks_priors.md"
-
+        # Log results to markdown log file inside dedicated experiment subfolder
         with open(log_path, 'w') as f_log:
             f_log.write("# Phase 2A — Empirical Spatial Density Baseline Evaluation Log\n\n")
             f_log.write(f"- **Target Split:** {args.split}\n")

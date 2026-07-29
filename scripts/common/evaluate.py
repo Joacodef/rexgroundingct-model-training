@@ -68,12 +68,21 @@ def main():
     parser.add_argument("--pred_dir", type=str, default=str(PREDICTIONS_DIR), help="Directory containing predicted masks")
     parser.add_argument("--dataset_json", type=str, default=str(DATASET_JSON), help="Path to dataset.json")
     
-    # Derive the default output JSON based on the predictions directory
-    default_out_json = str(DATA_DIR / "eval_results.json")
-    
-    parser.add_argument("--output_json", type=str, default=default_out_json, help="Path to save evaluation results")
+    parser.add_argument("--output_json", type=str, default=None, help="Path to save evaluation results (defaults to matching logs/ directory)")
     parser.add_argument("--split", type=str, default="val", help="Dataset split to evaluate")
     args = parser.parse_args()
+
+    # Intelligent default output_json resolution matching logs/ directory layout
+    if not args.output_json:
+        from scripts.config import LOGS_DIR
+        pred_path = Path(args.pred_dir).resolve()
+        sub_phase = pred_path.name
+        if (LOGS_DIR / sub_phase).exists() or sub_phase.startswith("phase_"):
+            log_target_dir = LOGS_DIR / sub_phase
+        else:
+            log_target_dir = LOGS_DIR / "common"
+        log_target_dir.mkdir(parents=True, exist_ok=True)
+        args.output_json = str(log_target_dir / f"eval_results_{args.split}.json")
 
     if not all([args.gt_dir, args.pred_dir, args.dataset_json]):
         print("[ERROR] Missing required paths. Please ensure DATA_PREP_DIR, DATA_PRED_DIR, and DATASET_JSON are set in your environment variables or passed as arguments.")

@@ -371,8 +371,16 @@ def main():
     img_dir = Path(args.img_dir)
     dataset_json_path = Path(args.dataset_json)
 
-    out_json_path = Path(args.output_json) if args.output_json else LOGS_DIR / "common" / f"{pred_dir.name}_diagnostic_analysis.json"
-    out_snapshots_dir = Path(args.output_dir) if args.output_dir else LOGS_DIR / "common" / "failure_snapshots" / pred_dir.name
+    # Resolve experiment subfolder under logs/
+    sub_phase = pred_dir.name
+    if (LOGS_DIR / sub_phase).exists() or sub_phase.startswith("phase_"):
+        exp_log_dir = LOGS_DIR / sub_phase / "exp_001_seg_masks_priors"
+    else:
+        exp_log_dir = LOGS_DIR / "common" / sub_phase
+    exp_log_dir.mkdir(parents=True, exist_ok=True)
+
+    out_json_path = Path(args.output_json) if args.output_json else exp_log_dir / f"diagnostic_analysis_{args.split}.json"
+    out_snapshots_dir = Path(args.output_dir) if args.output_dir else exp_log_dir / "failure_snapshots"
 
     print("=" * 80)
     print("3D/4D Segmentation Mask Diagnostic Profiler & Failure Inspector")

@@ -45,6 +45,7 @@ from scripts.common.prompt_normalizer import clean_finding_prompt
 
 
 def parse_args():
+    """Parse command-line arguments for Phase 2A empirical 3D spatial PDF baseline generation and evaluation."""
     parser = argparse.ArgumentParser(
         description="Phase 2A Data-Driven Empirical Spatial Probability Density Baseline Predictor"
     )
@@ -107,6 +108,23 @@ class EmpiricalSpatialPDFBaseline:
     CANONICAL_SHAPE = (192, 192, 192)
 
     def __init__(self, pdf_cache_path: Path, dataset_json_path: Path, seg_raw_dir: Path, max_train_scans: int = 300, force_rebuild: bool = False):
+        """
+        Signature:
+            __init__(pdf_cache_path: Path, dataset_json_path: Path, seg_raw_dir: Path, max_train_scans: int, force_rebuild: bool) -> None
+
+        Objective:
+            Initialize 3D empirical PDF baseline engine, loading or generating cached 3D heatmaps.
+
+        Inputs:
+            pdf_cache_path (Path): Path to .npz file containing cached 3D probability density maps.
+            dataset_json_path (Path): Path to dataset.json file.
+            seg_raw_dir (Path): Path to raw GT segmentations directory.
+            max_train_scans (int): Max training split scans to sample for PDF building. Default 300.
+            force_rebuild (bool): Whether to force rebuilding PDF heatmaps from scratch. Default False.
+
+        Outputs:
+            None
+        """
         self.pdf_cache_path = pdf_cache_path
         self.dataset_json_path = dataset_json_path
         self.seg_raw_dir = seg_raw_dir
@@ -121,7 +139,20 @@ class EmpiricalSpatialPDFBaseline:
             self.spatial_pdfs = self._load_pdf_cache()
 
     def _build_pdf_cache(self) -> dict:
-        """Accumulate and average GT segmentations per category across training split."""
+        """
+        Signature:
+            _build_pdf_cache() -> dict
+
+        Objective:
+            Accumulate and average GT 3D segmentation masks per category across the training split
+            to generate 3D empirical spatial probability density heatmaps P_c(z, y, x).
+
+        Inputs:
+            None (Uses instance metadata paths and max_train_scans limit).
+
+        Outputs:
+            dict: Dictionary mapping 14 category codes ('1a'..'2h') to 3D numpy arrays of shape (192, 192, 192).
+        """
         self.pdf_cache_path.parent.mkdir(parents=True, exist_ok=True)
         
         with open(self.dataset_json_path, 'r') as f:
@@ -218,13 +249,37 @@ class EmpiricalSpatialPDFBaseline:
         return spatial_pdfs
 
     def _load_pdf_cache(self) -> dict:
-        """Load precomputed 3D spatial PDF heatmaps from npz cache."""
+        """
+        Signature:
+            _load_pdf_cache() -> dict
+
+        Objective:
+            Load precomputed 3D spatial PDF heatmaps from .npz cache file.
+
+        Inputs:
+            None (Reads from self.pdf_cache_path).
+
+        Outputs:
+            dict: Dictionary mapping category codes to 3D float32 numpy arrays of shape (192, 192, 192).
+        """
         with np.load(self.pdf_cache_path) as data:
             spatial_pdfs = {code: data[code] for code in CATEGORY_MAP.keys() if code in data}
         return spatial_pdfs
 
     def match_category_code(self, prompt_text: str) -> str:
-        """Find matching 14-category code for a finding text prompt."""
+        """
+        Signature:
+            match_category_code(prompt_text: str) -> str
+
+        Objective:
+            Match raw radiology report finding text to its corresponding 14-category code string ('1a'..'2h').
+
+        Inputs:
+            prompt_text (str): Free-text radiology report finding description.
+
+        Outputs:
+            str: 14-category code string ('1a'..'2h'). Defaults to '2h' if unmatched.
+        """
         cleaned_text = clean_finding_prompt(prompt_text).lower()
         for code, cat_name in CATEGORY_MAP.items():
             if cat_name.lower() in cleaned_text:
@@ -247,8 +302,19 @@ class EmpiricalSpatialPDFBaseline:
 
     def generate_prediction_mask(self, target_shape_ras: tuple, prompt_text: str) -> np.ndarray:
         """
-        Resample category 3D empirical PDF heatmap P_c to target scan's RAS shape and threshold.
-        target_shape_ras: (Z, Y, X) shape in RAS space.
+        Signature:
+            generate_prediction_mask(target_shape_ras: tuple, prompt_text: str) -> np.ndarray
+
+        Objective:
+            Resample category 3D empirical PDF heatmap P_c to target scan's RAS shape, apply
+            category-specific percentile thresholding, and prune tiny 3D noise blobs (<10 voxels).
+
+        Inputs:
+            target_shape_ras (tuple): Target 3D volume shape (Z, Y, X) in canonical RAS space.
+            prompt_text (str): Free-text radiology report finding prompt.
+
+        Outputs:
+            np.ndarray: 3D uint8 binary prediction mask array with shape matching target_shape_ras.
         """
         code = self.match_category_code(prompt_text)
         pdf_np = self.spatial_pdfs.get(code, np.full(self.CANONICAL_SHAPE, 0.01, dtype=np.float32))
@@ -288,6 +354,7 @@ class EmpiricalSpatialPDFBaseline:
 
 
 def main():
+    """Main CLI entry point for executing Phase 2A empirical 3D spatial PDF baseline inference and 4D Back-Reorientation."""
     args = parse_args()
 
     # Resolve Paths
@@ -428,7 +495,7 @@ def main():
         # Log results to markdown log file
         log_dir = LOGS_DIR / "phase_2a_rule_based"
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / "exp_001_rule_based_val_eval.md"
+        log_path = log_dir / "exp_001_seg_masks_priors.md"
 
         with open(log_path, 'w') as f_log:
             f_log.write("# Phase 2A — Empirical Spatial Density Baseline Evaluation Log\n\n")

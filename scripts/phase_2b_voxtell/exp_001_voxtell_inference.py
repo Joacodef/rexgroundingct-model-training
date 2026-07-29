@@ -41,6 +41,7 @@ sys.path.append(os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(
 from scripts.common.prompt_normalizer import clean_finding_prompt
 
 def main():
+    """Main CLI entry point for executing VoxTell v1.1 batch zero-shot inference and 4D Back-Reorientation."""
     # Parse CLI arguments for split selection
     parser = argparse.ArgumentParser(description="VoxTell Batch Zero-Shot Inference")
     parser.add_argument("--split", type=str, default="val", choices=["train", "val", "test"], 
@@ -54,7 +55,7 @@ def main():
     parser.add_argument("--use_teacher", action="store_true",
                         help="Load teacher_state_dict instead of student_state_dict if custom checkpoint is specified")
     parser.add_argument("--tile_step_size", type=float, default=0.5,
-                        help="Step size for sliding window inference (default: 0.5 = 50% overlap, increase to speed up)")
+                        help="Step size for sliding window inference (default: 0.5 = 50%% overlap, increase to speed up)")
     parser.add_argument("--normalize_prompts", action="store_true", default=True,
                         help="Normalize free-text prompts to strip non-diagnostic clinical modifiers (default: True)")
     parser.add_argument("--no_normalize_prompts", action="store_false", dest="normalize_prompts",

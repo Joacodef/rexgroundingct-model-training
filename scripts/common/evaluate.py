@@ -34,8 +34,21 @@ from scripts.config import (
 
 CATEGORY_NAMES = CATEGORY_MAP
 
-def compute_dice(pred_mask, gt_mask):
-    """Computes the Dice Coefficient between two binary masks."""
+def compute_dice(pred_mask: np.ndarray, gt_mask: np.ndarray) -> float:
+    """
+    Signature:
+        compute_dice(pred_mask: np.ndarray, gt_mask: np.ndarray) -> float
+
+    Objective:
+        Compute the 3D/4D Dice Similarity Coefficient (DSC) between prediction and GT binary masks.
+
+    Inputs:
+        pred_mask (np.ndarray): Binary prediction mask array.
+        gt_mask (np.ndarray): Binary ground truth mask array.
+
+    Outputs:
+        float: Dice coefficient value in [0.0, 1.0]. Returns 1.0 if both masks are empty.
+    """
     pred_bool = pred_mask > 0
     gt_bool = gt_mask > 0
     
@@ -48,6 +61,7 @@ def compute_dice(pred_mask, gt_mask):
     return 2. * intersection / union
 
 def main():
+    """Main CLI entry point for computing challenge metrics (Average Dice & Hit Rate) over 4D predictions."""
     parser = argparse.ArgumentParser(description="Evaluate 4D predictions for ReXGroundingCT")
     
     parser.add_argument("--gt_dir", type=str, default=str(RAW_MASKS_DIR), help="Directory containing raw GT masks")

@@ -1,0 +1,672 @@
+"""
+===============================================================================
+SHARED UTILITY:   3D/4D Prediction & Segmentation Mask Analyzer
+OBJECTIVE:        Unified quantitative profiling and qualitative failure 
+                  analysis tool for 3D/4D CT grounding segmentation masks 
+                  (VoxTell, Rule-Based Priors, Mean Teacher, GT masks).
+FEATURES:         - Quantitative: Dice, Hit Rate, Precision, Recall, Volumetric 
+                    Over/Under-Segmentation (cm³), FP/FN Volumes, Centroid Shift (mm), 
+                    3D Connected Component Topology (# Blobs, min/max blob size).
+                  - Qualitative: Top-K worst failure case harvesting and 2D slice 
+                    snapshot generator (Axial/Coronal CT overlays: GT green, Pred red).
+                  - Single-scan CLI inspection mode (--inspect_scan).
+USAGE:            python scripts/common/analyze_predictions.py \
+                      --pred_dir ../data/predictions/phase_2b_voxtell \
+                      --gt_dir ../data/raw/segmentations \
+                      --img_dir ../data/raw/images \
+                      --split val \
+                      --top_k_failures 10 \
+                      --save_snapshots
+===============================================================================
+"""
+
+import os
+import sys
+import gc
+import json
+import ctypes
+import argparse
+import numpy as np
+import nibabel as nib
+from pathlib import Path
+from tqdm import tqdm
+from dotenv import load_dotenv
+from scipy.ndimage import label, center_of_mass
+
+import matplotlib
+matplotlib.use('Agg')  # Headless rendering
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+
+# Resolve repository root
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from scripts.config import (
+    RAW_IMAGES_DIR, RAW_MASKS_DIR, PREDICTIONS_DIR, 
+    DATASET_JSON, LOGS_DIR, CATEGORY_MAP
+)
+from scripts.common.prompt_normalizer import clean_finding_prompt
+
+
+def parse_args():
+    """Parse command-line arguments for 3D/4D segmentation mask profiling and qualitative failure snapshot rendering."""
+    parser = argparse.ArgumentParser(
+        description="Unified 3D/4D Segmentation Mask Diagnostic Profiler & Qualitative Failure Snapshot Generator"
+    )
+    parser.add_argument(
+        "--pred_dir", type=str, default=str(PREDICTIONS_DIR / "phase_2b_voxtell"),
+        help="Path to directory containing predicted 4D/3D NIfTI masks"
+    )
+    parser.add_argument(
+        "--gt_dir", type=str, default=str(RAW_MASKS_DIR),
+        help="Path to raw GT segmentations directory"
+    )
+    parser.add_argument(
+        "--img_dir", type=str, default=str(RAW_IMAGES_DIR),
+        help="Path to raw CT images directory (required for qualitative 2D slice snapshots)"
+    )
+    parser.add_argument(
+        "--dataset_json", type=str, default=str(DATASET_JSON),
+        help="Path to dataset.json"
+    )
+    parser.add_argument(
+        "--split", type=str, default="val", choices=["train", "val", "test"],
+        help="Dataset split to evaluate (default: val)"
+    )
+    parser.add_argument(
+        "--output_json", type=str, default=None,
+        help="Path to save quantitative diagnostic JSON output"
+    )
+    parser.add_argument(
+        "--output_dir", type=str, default=None,
+        help="Directory to save qualitative 2D failure slice PNG snapshots"
+    )
+    parser.add_argument(
+        "--top_k_failures", type=int, default=10,
+        help="Number of top worst-performing failure cases to harvest (default: 10)"
+    )
+    parser.add_argument(
+        "--save_snapshots", action="store_true", default=False,
+        help="Generate and save 2D slice PNG snapshot overlays for top failure cases"
+    )
+    parser.add_argument(
+        "--inspect_scan", type=str, default=None,
+        help="Single scan ID to inspect qualitatively (e.g. --inspect_scan 10045)"
+    )
+    parser.add_argument(
+        "--start_idx", type=int, default=0, help="Start index for processing entries"
+    )
+    parser.add_argument(
+        "--end_idx", type=int, default=None, help="End index for processing entries"
+    )
+    return parser.parse_args()
+
+
+def compute_mask_pair_metrics(pred_3d: np.ndarray, gt_3d: np.ndarray, spacing_mm: tuple = (1.0, 1.0, 1.0)) -> dict:
+    """
+    Signature:
+        compute_mask_pair_metrics(pred_3d: np.ndarray, gt_3d: np.ndarray, spacing_mm: tuple) -> dict
+
+    Objective:
+        Compute comprehensive volumetric (cm³), spatial alignment (mm), precision/recall,
+        and 3D connected component topology metrics for a single prediction and GT 3D mask pair.
+
+    Inputs:
+        pred_3d (np.ndarray): 3D binary array of model predictions with shape (Z, Y, X).
+        gt_3d (np.ndarray): 3D binary array of ground truth mask with shape (Z, Y, X).
+        spacing_mm (tuple): Voxel physical spacing (dz, dy, dx) in millimeters. Default (1.0, 1.0, 1.0).
+
+    Outputs:
+        dict: Dictionary containing Dice, Precision, Recall, GT Vol (cm³), Pred Vol (cm³),
+              FP Vol (cm³), FN Vol (cm³), Centroid Shift Δd (mm), and Blob topology counts.
+    """
+    pred_bool = (pred_3d > 0)
+    gt_bool = (gt_3d > 0)
+
+    voxel_vol_cm3 = np.prod(spacing_mm) / 1000.0  # mm³ to cm³
+
+    tp_voxels = np.logical_and(pred_bool, gt_bool).sum()
+    fp_voxels = np.logical_and(pred_bool, ~gt_bool).sum()
+    fn_voxels = np.logical_and(~pred_bool, gt_bool).sum()
+
+    gt_voxels = gt_bool.sum()
+    pred_voxels = pred_bool.sum()
+
+    gt_vol_cm3 = float(gt_voxels * voxel_vol_cm3)
+    pred_vol_cm3 = float(pred_voxels * voxel_vol_cm3)
+    fp_vol_cm3 = float(fp_voxels * voxel_vol_cm3)
+    fn_vol_cm3 = float(fn_voxels * voxel_vol_cm3)
+
+    # Dice Score
+    union_voxels = pred_voxels + gt_voxels
+    if union_voxels == 0:
+        dice = 1.0
+    else:
+        dice = float(2.0 * tp_voxels / union_voxels)
+
+    # Precision & Recall
+    precision = float(tp_voxels / (tp_voxels + fp_voxels)) if (tp_voxels + fp_voxels) > 0 else 0.0
+    recall = float(tp_voxels / (tp_voxels + fn_voxels)) if (tp_voxels + fn_voxels) > 0 else 0.0
+    vol_ratio = float(pred_vol_cm3 / gt_vol_cm3) if gt_vol_cm3 > 0 else (0.0 if pred_vol_cm3 == 0 else 999.0)
+
+    # 3D Centroid Computation (Centers of Mass)
+    if gt_bool.any():
+        gt_com_vox = center_of_mass(gt_bool)  # (Z, Y, X)
+    else:
+        gt_com_vox = None
+
+    if pred_bool.any():
+        pred_com_vox = center_of_mass(pred_bool)  # (Z, Y, X)
+    else:
+        pred_com_vox = None
+
+    # Centroid Euclidean Shift Δd (mm)
+    if gt_com_vox is not None and pred_com_vox is not None:
+        dz = (pred_com_vox[0] - gt_com_vox[0]) * spacing_mm[0]
+        dy = (pred_com_vox[1] - gt_com_vox[1]) * spacing_mm[1]
+        dx = (pred_com_vox[2] - gt_com_vox[2]) * spacing_mm[2]
+        centroid_err_mm = float(np.sqrt(dz**2 + dy**2 + dx**2))
+    else:
+        centroid_err_mm = None
+
+    # 3D Connected Component Topology
+    if gt_bool.any():
+        gt_labeled, gt_num_blobs = label(gt_bool)
+        gt_blob_sizes = np.bincount(gt_labeled.ravel())[1:]  # skip background
+    else:
+        gt_num_blobs = 0
+        gt_blob_sizes = np.array([])
+
+    if pred_bool.any():
+        pred_labeled, pred_num_blobs = label(pred_bool)
+        pred_blob_sizes = np.bincount(pred_labeled.ravel())[1:]
+    else:
+        pred_num_blobs = 0
+        pred_blob_sizes = np.array([])
+
+    return {
+        "dice": dice,
+        "precision": precision,
+        "recall": recall,
+        "gt_vol_cm3": gt_vol_cm3,
+        "pred_vol_cm3": pred_vol_cm3,
+        "fp_vol_cm3": fp_vol_cm3,
+        "fn_vol_cm3": fn_vol_cm3,
+        "vol_ratio": vol_ratio,
+        "gt_com_vox": [float(x) for x in gt_com_vox] if gt_com_vox is not None else None,
+        "pred_com_vox": [float(x) for x in pred_com_vox] if pred_com_vox is not None else None,
+        "centroid_err_mm": centroid_err_mm,
+        "gt_num_blobs": int(gt_num_blobs),
+        "pred_num_blobs": int(pred_num_blobs),
+        "gt_max_blob_vox": int(gt_blob_sizes.max()) if len(gt_blob_sizes) > 0 else 0,
+        "pred_max_blob_vox": int(pred_blob_sizes.max()) if len(pred_blob_sizes) > 0 else 0
+    }
+
+
+def generate_slice_snapshot(
+    ct_3d: np.ndarray,
+    gt_3d: np.ndarray,
+    pred_3d: np.ndarray,
+    meta: dict,
+    save_path: Path
+):
+    """
+    Signature:
+        generate_slice_snapshot(ct_3d: np.ndarray, gt_3d: np.ndarray, pred_3d: np.ndarray, meta: dict, save_path: Path) -> None
+
+    Objective:
+        Generate and save a 4-panel qualitative 2D slice PNG snapshot (Axial + Coronal views)
+        displaying CT intensity, Ground Truth (Green), Prediction (Red), and Overlap (Yellow).
+
+    Inputs:
+        ct_3d (np.ndarray): 3D CT volume image array (HU intensities) with shape (Z, Y, X).
+        gt_3d (np.ndarray): 3D binary Ground Truth mask array with shape (Z, Y, X).
+        pred_3d (np.ndarray): 3D binary Model Prediction mask array with shape (Z, Y, X).
+        meta (dict): Metadata dictionary containing scan_id, category_code, dice, prompt, etc.
+        save_path (Path): Target file path where the PNG snapshot image will be saved.
+
+    Outputs:
+        None (Saves 2D composite visualization image to save_path).
+    """
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Determine slice indices passing through GT center of mass (or Pred center of mass)
+    gt_bool = (gt_3d > 0)
+    pred_bool = (pred_3d > 0)
+
+    if gt_bool.any():
+        com = center_of_mass(gt_bool)
+    elif pred_bool.any():
+        com = center_of_mass(pred_bool)
+    else:
+        com = (ct_3d.shape[0] // 2, ct_3d.shape[1] // 2, ct_3d.shape[2] // 2)
+
+    slice_z = int(np.clip(round(com[0]), 0, ct_3d.shape[0] - 1))
+    slice_y = int(np.clip(round(com[1]), 0, ct_3d.shape[1] - 1))
+
+    # Windowing for CT image (Lung Window: Level=-600, Width=1500 -> [-1350, +150])
+    vmin, vmax = -1350, 150
+    ct_axial = np.clip(ct_3d[slice_z, :, :], vmin, vmax)
+    ct_coronal = np.clip(ct_3d[:, slice_y, :], vmin, vmax)
+
+    gt_axial = gt_3d[slice_z, :, :] > 0
+    pred_axial = pred_3d[slice_z, :, :] > 0
+
+    gt_coronal = gt_3d[:, slice_y, :] > 0
+    pred_coronal = pred_3d[:, slice_y, :] > 0
+
+    fig, axes = plt.subplots(2, 4, figsize=(20, 10))
+    fig.patch.set_facecolor('#0f172a')  # Dark theme background
+
+    # Formatting Title Header
+    scan_id = meta.get("scan_id", "Unknown")
+    cat_code = meta.get("category_code", "")
+    cat_name = CATEGORY_MAP.get(cat_code, "Unknown")
+    dice = meta.get("dice", 0.0)
+    gt_vol = meta.get("gt_vol_cm3", 0.0)
+    pred_vol = meta.get("pred_vol_cm3", 0.0)
+    shift_mm = meta.get("centroid_err_mm", None)
+    prompt = meta.get("prompt", "")
+
+    title_str = (
+        f"Scan: {scan_id}  |  Category: [{cat_code}] {cat_name}  |  Dice: {dice:.4f}\n"
+        f"GT Vol: {gt_vol:.2f} cm³  |  Pred Vol: {pred_vol:.2f} cm³  |  Shift: {f'{shift_mm:.1f} mm' if shift_mm is not None else 'N/A'}\n"
+        f"Prompt: \"{prompt[:90]}\""
+    )
+    fig.suptitle(title_str, color='white', fontsize=14, fontweight='bold', y=0.98)
+
+    # Subplot titles
+    titles = ["Raw CT Image", "Ground Truth (Green)", "Prediction (Red)", "Composite Overlay (Yellow=Overlap)"]
+
+    for col_idx in range(4):
+        # Top Row: Axial View
+        ax_ax = axes[0, col_idx]
+        ax_ax.set_facecolor('black')
+        ax_ax.imshow(ct_axial, cmap='gray', origin='lower')
+        ax_ax.set_title(f"Axial (Z={slice_z})\n{titles[col_idx]}", color='white', fontsize=11)
+        ax_ax.axis('off')
+
+        # Bottom Row: Coronal View
+        ax_cor = axes[1, col_idx]
+        ax_cor.set_facecolor('black')
+        ax_cor.imshow(ct_coronal, cmap='gray', origin='lower')
+        ax_cor.set_title(f"Coronal (Y={slice_y})\n{titles[col_idx]}", color='white', fontsize=11)
+        ax_cor.axis('off')
+
+        # Overlays
+        if col_idx == 1:  # GT Only
+            ax_ax.imshow(np.ma.masked_where(~gt_axial, gt_axial), cmap='Greens', alpha=0.5, origin='lower', vmin=0, vmax=1)
+            ax_cor.imshow(np.ma.masked_where(~gt_coronal, gt_coronal), cmap='Greens', alpha=0.5, origin='lower', vmin=0, vmax=1)
+        elif col_idx == 2:  # Pred Only
+            ax_ax.imshow(np.ma.masked_where(~pred_axial, pred_axial), cmap='Reds', alpha=0.5, origin='lower', vmin=0, vmax=1)
+            ax_cor.imshow(np.ma.masked_where(~pred_coronal, pred_coronal), cmap='Reds', alpha=0.5, origin='lower', vmin=0, vmax=1)
+        elif col_idx == 3:  # Composite Overlay
+            # GT in Green, Pred in Red, Overlap in Yellow
+            comp_axial = np.zeros((*gt_axial.shape, 3), dtype=np.float32)
+            comp_axial[gt_axial, 1] = 0.9  # Green
+            comp_axial[pred_axial, 0] = 0.9  # Red
+            mask_ax = gt_axial | pred_axial
+            ax_ax.imshow(np.ma.masked_where(~np.stack([mask_ax]*3, axis=-1), comp_axial), alpha=0.6, origin='lower')
+
+            comp_coronal = np.zeros((*gt_coronal.shape, 3), dtype=np.float32)
+            comp_coronal[gt_coronal, 1] = 0.9  # Green
+            comp_coronal[pred_coronal, 0] = 0.9  # Red
+            mask_cor = gt_coronal | pred_coronal
+            ax_cor.imshow(np.ma.masked_where(~np.stack([mask_cor]*3, axis=-1), comp_coronal), alpha=0.6, origin='lower')
+
+    # Legend at bottom
+    green_patch = mpatches.Patch(color='green', label='Ground Truth')
+    red_patch = mpatches.Patch(color='red', label='Prediction')
+    yellow_patch = mpatches.Patch(color='yellow', label='Overlap / Agreement')
+    fig.legend(handles=[green_patch, red_patch, yellow_patch], loc='lower center', ncol=3, frameon=True, facecolor='#1e293b', edgecolor='none', labelcolor='white')
+
+    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+    plt.savefig(str(save_path), dpi=150, bbox_inches='tight', facecolor=fig.get_facecolor())
+    plt.close(fig)
+    gc.collect()
+
+
+def match_prompt_category(prompt_text: str) -> str:
+    """
+    Signature:
+        match_prompt_category(prompt_text: str) -> str
+
+    Objective:
+        Identify the corresponding 14-category code (e.g., '2e') for a raw radiology finding prompt.
+
+    Inputs:
+        prompt_text (str): Free-text radiology report finding prompt string.
+
+    Outputs:
+        str: 14-category code string ('1a'..'2h'). Defaults to '2h' (Other focal) if unmatched.
+    """
+    cleaned = clean_finding_prompt(prompt_text).lower()
+    for code, cat_name in CATEGORY_MAP.items():
+        if cat_name.lower() in cleaned:
+            return code
+    if "nodule" in cleaned or "mass" in cleaned:
+        return "2d"
+    elif "opacity" in cleaned or "consolidation" in cleaned:
+        return "2c"
+    elif "effusion" in cleaned:
+        return "2e"
+    elif "thickening" in cleaned:
+        return "1d"
+    elif "emphysema" in cleaned:
+        return "1c"
+    elif "bronch" in cleaned:
+        return "1a"
+    return "2h"
+
+
+def main():
+    """Main entry point executing full 3D/4D mask profiling, error tier aggregation, report export, and snapshot rendering."""
+    args = parse_args()
+
+    # Paths
+    pred_dir = Path(args.pred_dir)
+    gt_dir = Path(args.gt_dir)
+    img_dir = Path(args.img_dir)
+    dataset_json_path = Path(args.dataset_json)
+
+    out_json_path = Path(args.output_json) if args.output_json else LOGS_DIR / "common" / f"{pred_dir.name}_diagnostic_analysis.json"
+    out_snapshots_dir = Path(args.output_dir) if args.output_dir else LOGS_DIR / "common" / "failure_snapshots" / pred_dir.name
+
+    print("=" * 80)
+    print("3D/4D Segmentation Mask Diagnostic Profiler & Failure Inspector")
+    print(f"Target Split:             {args.split}")
+    print(f"Prediction Directory:     {pred_dir}")
+    print(f"Ground Truth Directory:   {gt_dir}")
+    print(f"CT Images Directory:      {img_dir}")
+    print(f"Output Diagnostic JSON:   {out_json_path}")
+    if args.save_snapshots:
+        print(f"Snapshot Output Directory: {out_snapshots_dir}")
+    print("=" * 80)
+
+    if not pred_dir.exists():
+        print(f"[ERROR] Prediction directory does not exist: {pred_dir}")
+        sys.exit(1)
+
+    # Load metadata
+    with open(dataset_json_path, 'r') as f:
+        metadata = json.load(f)
+
+    entries = metadata.get(args.split, [])
+    if not entries:
+        print(f"[ERROR] No entries found for split '{args.split}' in {dataset_json_path}")
+        sys.exit(1)
+
+    if args.inspect_scan:
+        entries = [e for e in entries if args.inspect_scan in e.get("name", "")]
+        if not entries:
+            print(f"[ERROR] Specified scan ID '{args.inspect_scan}' not found in split '{args.split}'")
+            sys.exit(1)
+
+    end_idx = args.end_idx if args.end_idx is not None else len(entries)
+    entries = entries[args.start_idx:end_idx]
+
+    eval_records = []
+    category_summary = {code: {"dices": [], "gt_vols": [], "pred_vols": [], "fp_vols": [], "fn_vols": [], "centroid_errs": [], "gt_blobs": [], "pred_blobs": []} for code in CATEGORY_MAP.keys()}
+
+    missing_cases = 0
+
+    print(f"\n[INFO] Profiling {len(entries)} scans...")
+    for entry in tqdm(entries, desc="Analyzing 3D/4D Masks"):
+        scan_id = entry.get("name", "").replace(".nii.gz", "")
+        if not scan_id:
+            continue
+
+        gt_path = gt_dir / f"{scan_id}.nii.gz"
+        pred_path = pred_dir / f"{scan_id}.nii.gz"
+        img_path = img_dir / f"{scan_id}.nii.gz"
+
+        if not gt_path.exists() or not pred_path.exists():
+            missing_cases += 1
+            continue
+
+        try:
+            gt_nii = nib.load(str(gt_path))
+            pred_nii = nib.load(str(pred_path))
+
+            spacing_mm = tuple(float(x) for x in gt_nii.header.get_zooms()[:3])
+
+            gt_data = np.asanyarray(gt_nii.dataobj).astype(np.float32)
+            pred_data = np.asanyarray(pred_nii.dataobj).astype(np.float32)
+        except Exception as e:
+            tqdm.write(f"[WARNING] Error reading NIfTI for {scan_id}: {e}")
+            continue
+
+        # Reorient GT / Pred dimensions to match (F, X, Y, Z)
+        if gt_data.ndim == 3:
+            gt_data = np.expand_dims(gt_data, axis=0)
+
+        if gt_data.ndim == 4 and gt_data.shape[-1] < np.min(gt_data.shape[:-1]):
+            gt_data = np.moveaxis(gt_data, -1, 0)
+
+        if pred_data.ndim == 3:
+            pred_data = np.expand_dims(pred_data, axis=0)
+
+        if pred_data.ndim == 4 and pred_data.shape[-1] < np.min(pred_data.shape[:-1]):
+            pred_data = np.moveaxis(pred_data, -1, 0)
+
+        if gt_data.shape != pred_data.shape:
+            tqdm.write(f"[WARNING] Shape mismatch for {scan_id}: GT {gt_data.shape} vs Pred {pred_data.shape}")
+            continue
+
+        num_findings = gt_data.shape[0]
+        findings_meta = entry.get("findings", {})
+        categories_dict = entry.get("categories", {})
+
+        for f_idx in range(num_findings):
+            # Extract prompt text
+            if isinstance(findings_meta, dict):
+                p_item = findings_meta.get(str(f_idx), {})
+                prompt_text = p_item.get("text", "") if isinstance(p_item, dict) else str(p_item)
+            elif isinstance(findings_meta, list) and f_idx < len(findings_meta):
+                p_item = findings_meta[f_idx]
+                prompt_text = p_item.get("text", "") if isinstance(p_item, dict) else str(p_item)
+            else:
+                prompt_text = ""
+
+            # Extract category code
+            cat_code = str(categories_dict.get(str(f_idx), ""))
+            if not cat_code or cat_code not in CATEGORY_MAP:
+                cat_code = match_prompt_category(prompt_text)
+
+            # Compute finding-level 3D metrics
+            metrics = compute_mask_pair_metrics(pred_data[f_idx], gt_data[f_idx], spacing_mm=spacing_mm)
+
+            record = {
+                "scan_id": scan_id,
+                "finding_idx": f_idx,
+                "category_code": cat_code,
+                "category_name": CATEGORY_MAP.get(cat_code, "Unknown"),
+                "prompt": prompt_text,
+                "gt_path": str(gt_path),
+                "pred_path": str(pred_path),
+                "img_path": str(img_path),
+                **metrics
+            }
+            eval_records.append(record)
+
+            # Accumulate category summary
+            category_summary[cat_code]["dices"].append(metrics["dice"])
+            category_summary[cat_code]["gt_vols"].append(metrics["gt_vol_cm3"])
+            category_summary[cat_code]["pred_vols"].append(metrics["pred_vol_cm3"])
+            category_summary[cat_code]["fp_vols"].append(metrics["fp_vol_cm3"])
+            category_summary[cat_code]["fn_vols"].append(metrics["fn_vol_cm3"])
+            category_summary[cat_code]["gt_blobs"].append(metrics["gt_num_blobs"])
+            category_summary[cat_code]["pred_blobs"].append(metrics["pred_num_blobs"])
+            if metrics["centroid_err_mm"] is not None:
+                category_summary[cat_code]["centroid_errs"].append(metrics["centroid_err_mm"])
+
+        del gt_data, pred_data, gt_nii, pred_nii
+        gc.collect()
+
+    if not eval_records:
+        print("[ERROR] No valid finding pairs were evaluated.")
+        sys.exit(1)
+
+    # Macro & Category Statistics
+    all_dices = [r["dice"] for r in eval_records]
+    all_hits_01 = [1 if d >= 0.1 else 0 for d in all_dices]
+    all_centroid_errs = [r["centroid_err_mm"] for r in eval_records if r["centroid_err_mm"] is not None]
+
+    avg_dice = float(np.mean(all_dices))
+    hit_rate_01 = float(np.mean(all_hits_01))
+    mean_centroid_err = float(np.mean(all_centroid_errs)) if all_centroid_errs else 0.0
+
+    # Categorized Error Tiers
+    complete_misses = [r for r in eval_records if r["dice"] == 0.0]
+    sub_threshold = [r for r in eval_records if 0.0 < r["dice"] < 0.1]
+    hit_tier = [r for r in eval_records if 0.1 <= r["dice"] < 0.5]
+    high_fidelity = [r for r in eval_records if r["dice"] >= 0.5]
+
+    # Category Breakdown Formatting
+    category_results = {}
+    for code in CATEGORY_MAP.keys():
+        stats = category_summary[code]
+        c_dices = stats["dices"]
+        c_count = len(c_dices)
+        if c_count > 0:
+            category_results[code] = {
+                "name": CATEGORY_MAP[code],
+                "count": c_count,
+                "avg_dice": float(np.mean(c_dices)),
+                "hit_rate_0.1": float(np.mean([1 if d >= 0.1 else 0 for d in c_dices])),
+                "avg_gt_vol_cm3": float(np.mean(stats["gt_vols"])),
+                "avg_pred_vol_cm3": float(np.mean(stats["pred_vols"])),
+                "avg_fp_vol_cm3": float(np.mean(stats["fp_vols"])),
+                "avg_fn_vol_cm3": float(np.mean(stats["fn_vols"])),
+                "avg_centroid_err_mm": float(np.mean(stats["centroid_errs"])) if stats["centroid_errs"] else 0.0,
+                "avg_gt_blobs": float(np.mean(stats["gt_blobs"])),
+                "avg_pred_blobs": float(np.mean(stats["pred_blobs"]))
+            }
+
+    # Print Terminal Diagnostic Summary Table
+    print("\n" + "=" * 105)
+    print("                        3D/4D PREDICTION DIAGNOSTIC PROFILER SUMMARY")
+    print("=" * 105)
+    print(f"Total Evaluated Findings:     {len(eval_records)} across {len(set(r['scan_id'] for r in eval_records))} scans")
+    print(f"Average Dice (Primary Metric): {avg_dice:.4f}")
+    print(f"Hit Rate (Dice >= 0.1):       {hit_rate_01:.4f} ({sum(all_hits_01)} / {len(eval_records)} findings)")
+    print(f"Mean Centroid Shift (Δd):     {mean_centroid_err:.2f} mm")
+    print("-" * 105)
+    print("ERROR TIERS BREAKDOWN:")
+    print(f"  - Complete Misses (Dice = 0.0):        {len(complete_misses):<4} ({len(complete_misses)/len(eval_records)*100:.1f}%)")
+    print(f"  - Sub-Threshold (0.0 < Dice < 0.1):    {len(sub_threshold):<4} ({len(sub_threshold)/len(eval_records)*100:.1f}%)")
+    print(f"  - Hit Rate Tier (0.1 <= Dice < 0.5):   {len(hit_tier):<4} ({len(hit_tier)/len(eval_records)*100:.1f}%)")
+    print(f"  - High Fidelity Match (Dice >= 0.5):  {len(high_fidelity):<4} ({len(high_fidelity)/len(eval_records)*100:.1f}%)")
+    print("=" * 105)
+    print(f"{'Code':<5} {'Category Name':<30} {'Count':<6} {'Dice':<7} {'HitRate':<8} {'GT Vol':<8} {'Pred Vol':<9} {'FP Vol':<8} {'Shift(mm)':<9}")
+    print("-" * 105)
+    for code, res in category_results.items():
+        print(f"{code:<5} {res['name']:<30} {res['count']:<6} {res['avg_dice']:.4f}  {res['hit_rate_0.1']:.4f}   {res['avg_gt_vol_cm3']:<8.2f} {res['avg_pred_vol_cm3']:<9.2f} {res['avg_fp_vol_cm3']:<8.2f} {res['avg_centroid_err_mm']:<9.1f}")
+    print("=" * 105)
+
+    # Save JSON Diagnostic Report
+    report = {
+        "split": args.split,
+        "prediction_dir": str(pred_dir),
+        "total_findings_evaluated": len(eval_records),
+        "macro_metrics": {
+            "average_dice": avg_dice,
+            "hit_rate_0.1": hit_rate_01,
+            "mean_centroid_err_mm": mean_centroid_err,
+            "complete_misses_count": len(complete_misses),
+            "sub_threshold_count": len(sub_threshold),
+            "hit_tier_count": len(hit_tier),
+            "high_fidelity_count": len(high_fidelity)
+        },
+        "category_breakdown": category_results,
+        "all_records": eval_records
+    }
+
+    out_json_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_json_path, 'w') as f:
+        json.dump(report, f, indent=4)
+    print(f"\n[SUCCESS] Saved diagnostic analysis JSON to {out_json_path}")
+
+    # Qualitative Failure Harvesting & 2D Slice Snapshot Generation
+    if args.save_snapshots or args.inspect_scan:
+        print("\n" + "=" * 80)
+        print("Harvesting Top Failure Cases & Generating 2D Slice Snapshot Overlays...")
+        print("=" * 80)
+
+        # Sort evaluation records by lowest Dice score (or largest centroid error)
+        top_failures = sorted(eval_records, key=lambda r: (r["dice"], -r["gt_vol_cm3"]))[:args.top_k_failures]
+
+        if args.inspect_scan:
+            top_failures = eval_records
+
+        snapshot_count = 0
+        for fail_item in tqdm(top_failures, desc="Rendering Failure Snapshots"):
+            scan_id = fail_item["scan_id"]
+            f_idx = fail_item["finding_idx"]
+            cat_code = fail_item["category_code"]
+            img_path = Path(fail_item["img_path"])
+            gt_path = Path(fail_item["gt_path"])
+            pred_path = Path(fail_item["pred_path"])
+
+            if not img_path.exists():
+                tqdm.write(f"[WARNING] Raw CT image missing for snapshot: {img_path}")
+                continue
+
+            try:
+                ct_nii = nib.load(str(img_path))
+                gt_nii = nib.load(str(gt_path))
+                pred_nii = nib.load(str(pred_path))
+
+                # Reorient CT, GT, Pred to canonical orientation (X, Y, Z) -> transpose to (Z, Y, X)
+                ct_raw = np.asanyarray(ct_nii.dataobj).astype(np.float32)
+                gt_raw = np.asanyarray(gt_nii.dataobj).astype(np.float32)
+                pred_raw = np.asanyarray(pred_nii.dataobj).astype(np.float32)
+
+                if gt_raw.ndim == 3:
+                    gt_raw = np.expand_dims(gt_raw, axis=0)
+                if gt_raw.ndim == 4 and gt_raw.shape[-1] < np.min(gt_raw.shape[:-1]):
+                    gt_raw = np.moveaxis(gt_raw, -1, 0)
+
+                if pred_raw.ndim == 3:
+                    pred_raw = np.expand_dims(pred_raw, axis=0)
+                if pred_raw.ndim == 4 and pred_raw.shape[-1] < np.min(pred_raw.shape[:-1]):
+                    pred_raw = np.moveaxis(pred_raw, -1, 0)
+
+                gt_3d = gt_raw[f_idx]
+                pred_3d = pred_raw[f_idx]
+
+                # Standardize 3D CT volume to (Z, Y, X)
+                if ct_raw.ndim == 3:
+                    ct_3d = np.transpose(ct_raw, (2, 1, 0))  # (X, Y, Z) -> (Z, Y, X)
+                else:
+                    ct_3d = ct_raw
+
+                # Transpose 3D masks to match (Z, Y, X)
+                if gt_3d.shape != ct_3d.shape and gt_3d.shape[::-1] == ct_3d.shape:
+                    gt_3d = np.transpose(gt_3d, (2, 1, 0))
+                    pred_3d = np.transpose(pred_3d, (2, 1, 0))
+
+                out_snapshot_path = out_snapshots_dir / f"fail_rank{snapshot_count+1:02d}_{scan_id}_f{f_idx}_{cat_code}_dice{fail_item['dice']:.3f}.png"
+
+                generate_slice_snapshot(
+                    ct_3d=ct_3d,
+                    gt_3d=gt_3d,
+                    pred_3d=pred_3d,
+                    meta=fail_item,
+                    save_path=out_snapshot_path
+                )
+                snapshot_count += 1
+
+                del ct_raw, gt_raw, pred_raw, ct_3d, gt_3d, pred_3d
+                gc.collect()
+            except Exception as e:
+                tqdm.write(f"[WARNING] Failed snapshot generation for {scan_id}: {e}")
+                continue
+
+        print(f"[SUCCESS] Exported {snapshot_count} 2D failure slice PNG snapshots to {out_snapshots_dir}")
+
+
+if __name__ == "__main__":
+    main()

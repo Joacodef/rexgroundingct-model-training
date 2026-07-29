@@ -44,15 +44,42 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 class CopyAffined(MapTransform):
     """
-    Dictionary-based transform to copy the affine matrix and spacing metadata 
-    from a reference key (e.g., 'image') to target keys (e.g., 'label').
-    This fixes cases where the segmentation mask was saved with an identity affine.
+    Dictionary-based MONAI transform to copy affine and spatial metadata from a reference key to target keys.
+    Fixes identity affine issues in raw segmentation masks.
     """
     def __init__(self, keys, ref_key="image", allow_missing_keys=False):
+        """
+        Signature:
+            __init__(keys, ref_key: str, allow_missing_keys: bool) -> None
+
+        Objective:
+            Initialize CopyAffined transform mapping target keys to a reference metadata key.
+
+        Inputs:
+            keys (Sequence[str] | str): Keys of the target dictionary items to modify.
+            ref_key (str): Key of the reference dictionary item containing ground-truth affine. Default 'image'.
+            allow_missing_keys (bool): Whether to ignore missing keys. Default False.
+
+        Outputs:
+            None
+        """
         super().__init__(keys, allow_missing_keys)
         self.ref_key = ref_key
 
     def __call__(self, data):
+        """
+        Signature:
+            __call__(data: dict) -> dict
+
+        Objective:
+            Execute affine metadata copy from reference tensor ('image') to target tensors ('label').
+
+        Inputs:
+            data (dict): MONAI data dictionary containing image and label tensors.
+
+        Outputs:
+            dict: Updated MONAI data dictionary with synchronized affine matrices.
+        """
         d = dict(data)
         ref_tensor = d[self.ref_key]
         for key in self.key_iterator(d):
@@ -78,6 +105,7 @@ class CopyAffined(MapTransform):
         return d
 
 def main():
+    """Main CLI entry point for batch volume preprocessing, MONAI 1.5mm isotropic resampling, and tensor caching."""
     # 1. Define parser for CLI arguments
     parser = argparse.ArgumentParser(description="ReXGroundingCT Preprocessing Script")
     parser.add_argument("--split", type=str, required=True, choices=["train", "val", "test"], 

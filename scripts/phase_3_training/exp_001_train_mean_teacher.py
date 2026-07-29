@@ -43,7 +43,32 @@ class ReXDataset(Dataset):
     Loads images and 4D segmentations in native RAS space, crops non-zero regions,
     and applies MONAI patch-based cropping and augmentations.
     """
+class ReXDataset(Dataset):
+    """
+    Native Resolution 3D CT Dataset for ReXGroundingCT fine-tuning.
+    Loads images and 4D segmentations in native RAS space, crops non-zero regions,
+    and applies MONAI patch-based cropping and augmentations.
+    """
     def __init__(self, dataset_json, split, img_dir, seg_dir, cache_dir, is_train=True, patch_size=192):
+        """
+        Signature:
+            __init__(dataset_json: str, split: str, img_dir: str, seg_dir: str, cache_dir: str, is_train: bool, patch_size: int) -> None
+
+        Objective:
+            Initialize ReXDataset instance, setup MONAI augmentation pipeline, Z-score intensity normalization, and SSD cache hash.
+
+        Inputs:
+            dataset_json (str): Path to dataset.json metadata.
+            split (str): Dataset partition ('train', 'val', 'test').
+            img_dir (str): Directory path containing raw CT images.
+            seg_dir (str): Directory path containing raw GT segmentations.
+            cache_dir (str): Directory path containing precomputed Qwen text embeddings.
+            is_train (bool): Whether dataset is configured for training (applies random augmentations). Default True.
+            patch_size (int): Spatial crop patch size (e.g. 192). Default 192.
+
+        Outputs:
+            None
+        """
         self.split = split
         self.img_dir = img_dir
         self.seg_dir = seg_dir
@@ -92,9 +117,35 @@ class ReXDataset(Dataset):
             ])
 
     def __len__(self):
+        """
+        Signature:
+            __len__() -> int
+
+        Objective:
+            Return total number of dataset entries.
+
+        Inputs:
+            None
+
+        Outputs:
+            int: Number of entries in dataset split.
+        """
         return len(self.entries)
 
     def __getitem__(self, idx):
+        """
+        Signature:
+            __getitem__(idx: int) -> dict
+
+        Objective:
+            Load, normalize, crop, and augment a single CT volume patch and its text embeddings.
+
+        Inputs:
+            idx (int): Dataset entry index.
+
+        Outputs:
+            dict: Data dictionary containing 'image', 'seg', 'text_embeddings', and 'scan_id'.
+        """
         entry = self.entries[idx]
         scan_id = entry['name'].replace('.nii.gz', '')
         
@@ -198,6 +249,21 @@ class ValidationPredictor(VoxTellPredictor):
     Qwen text embedding model during validation to conserve GPU memory.
     """
     def __init__(self, model_dir: str, device: torch.device, network: torch.nn.Module):
+        """
+        Signature:
+            __init__(model_dir: str, device: torch.device, network: torch.nn.Module) -> None
+
+        Objective:
+            Initialize lightweight ValidationPredictor bypassing Qwen text encoder initialization.
+
+        Inputs:
+            model_dir (str): Directory containing VoxTell model configuration plans.json.
+            device (torch.device): PyTorch compute device.
+            network (torch.nn.Module): Pre-loaded VoxTell network instance.
+
+        Outputs:
+            None
+        """
         self.device = device
         if device.type == 'cuda':
             torch.backends.cudnn.benchmark = False
@@ -216,13 +282,39 @@ class ValidationPredictor(VoxTellPredictor):
         self.network = network
 
     def predict_sliding_window_return_logits(self, input_image: torch.Tensor, text_embeddings: torch.Tensor) -> torch.Tensor:
+        """
+        Signature:
+            predict_sliding_window_return_logits(input_image: torch.Tensor, text_embeddings: torch.Tensor) -> torch.Tensor
+
+        Objective:
+            Perform sliding window inference on 3D CT volume image and return raw pre-sigmoid logits.
+
+        Inputs:
+            input_image (torch.Tensor): 3D/4D normalized CT image tensor.
+            text_embeddings (torch.Tensor): Text embedding tensor of shape (F, 2560).
+
+        Outputs:
+            torch.Tensor: Pre-sigmoid logit volume tensor of shape (F, Z, Y, X).
+        """
         logits = super().predict_sliding_window_return_logits(input_image, text_embeddings)
         return logits
 
 
 def precompute_text_cache(dataset_json, cache_dir, device):
     """
-    Offline pre-computation of Qwen text embeddings for all dataset prompts.
+    Signature:
+        precompute_text_cache(dataset_json: str, cache_dir: str, device: torch.device) -> None
+
+    Objective:
+        Perform offline pre-computation and local caching of Qwen text embeddings for all radiology prompts.
+
+    Inputs:
+        dataset_json (str): Path to dataset.json metadata.
+        cache_dir (str): Path to output directory where .pt embedding files will be saved.
+        device (torch.device): PyTorch compute device for running Qwen model.
+
+    Outputs:
+        None (Saves .pt tensor files to cache_dir).
     """
     os.makedirs(cache_dir, exist_ok=True)
     
@@ -287,7 +379,19 @@ def precompute_text_cache(dataset_json, cache_dir, device):
 
 def load_voxtell_model(model_dir, device, deep_supervision=False):
     """
-    Instantiates and loads weights for the VoxTellModel baseline checkpoint.
+    Signature:
+        load_voxtell_model(model_dir: str, device: torch.device, deep_supervision: bool) -> VoxTellModel
+
+    Objective:
+        Instantiate VoxTellModel network and load pretrained checkpoint weights.
+
+    Inputs:
+        model_dir (str): Directory containing model plans.json and checkpoint weights.
+        device (torch.device): PyTorch compute device.
+        deep_supervision (bool): Whether to enable multi-scale decoder outputs. Default False.
+
+    Outputs:
+        VoxTellModel: Loaded PyTorch neural network model in evaluation mode on device.
     """
     import pydoc
     from batchgenerators.utilities.file_and_folder_operations import join, load_json
@@ -326,8 +430,27 @@ def load_voxtell_model(model_dir, device, deep_supervision=False):
 @torch.no_grad()
 def update_ema_variables(student_model, teacher_model, alpha):
     """
-    Updates the Teacher's parameters using Exponential Moving Average (EMA).
+    Signature:
+        update_ema_variables(student_model: torch.nn.Module, teacher_model: torch.nn.Module, alpha: float) -> None
+
+    Objective:
+        Update Teacher network parameters via Exponential Moving Average (EMA) from Student network.
+
+    Inputs:
+        student_model (torch.nn.Module): Active Student network model.
+        teacher_model (torch.nn.Module): Target Teacher network model.
+        alpha (float): EMA decay weighting factor (e.g. 0.999).
+
+    Outputs:
+        None (In-place parameter update).
     """
+    # Parameter update
+    for teacher_param, student_param in zip(teacher_model.parameters(), student_model.parameters()):
+        teacher_param.data.mul_(alpha).add_(student_param.data, alpha=1 - alpha)
+        
+    # Buffer synchronization
+    for teacher_buffer, student_buffer in zip(teacher_model.buffers(), student_model.buffers()):
+        teacher_buffer.data.copy_(student_buffer.data)
     # Parameter update
     for teacher_param, student_param in zip(teacher_model.parameters(), student_model.parameters()):
         teacher_param.data.mul_(alpha).add_(student_param.data, alpha=1 - alpha)
@@ -341,17 +464,40 @@ import torch.nn.functional as F
 
 def compute_roi_mask(seg_target, kernel_size=11, padding=5):
     """
-    Generates a Region of Interest (ROI) mask by applying 3D binary dilation to the targets.
-    Dilation is performed efficiently on GPU using F.max_pool3d.
+    Signature:
+        compute_roi_mask(seg_target: torch.Tensor, kernel_size: int, padding: int) -> torch.Tensor
+
+    Objective:
+        Generate a 3D Region of Interest (ROI) binary mask by applying 3D max-pooling dilation to targets.
+
+    Inputs:
+        seg_target (torch.Tensor): Binary target segmentation tensor of shape (batch, F, Z, Y, X).
+        kernel_size (int): 3D max pooling kernel size. Default 11.
+        padding (int): Padding for max pooling. Default 5.
+
+    Outputs:
+        torch.Tensor: Dilated boolean mask tensor of shape (batch, F, Z, Y, X).
     """
-    # seg_target shape: (batch, F, Z, Y, X)
     dilated = F.max_pool3d(seg_target.float(), kernel_size=kernel_size, stride=1, padding=padding)
     return dilated > 0
 
 
 def compute_spoco_loss(logits, targets, roi_mask, pos_weight=1.0):
     """
-    SPOCO Masked Supervised Loss. Confines BCE and Dice losses strictly within the dilated ROI.
+    Signature:
+        compute_spoco_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mask: torch.Tensor, pos_weight: float) -> torch.Tensor
+
+    Objective:
+        Compute SPOCO Masked Supervised Loss (BCE + Dice) strictly confined within the dilated ROI mask.
+
+    Inputs:
+        logits (torch.Tensor): Pre-sigmoid logit tensor of shape (batch, F, Z, Y, X).
+        targets (torch.Tensor): Ground truth target tensor of shape (batch, F, Z, Y, X).
+        roi_mask (torch.Tensor): Dilated boolean ROI mask tensor.
+        pos_weight (float): Positive class weight for BCE loss. Default 1.0.
+
+    Outputs:
+        torch.Tensor: Scalar loss tensor (BCE_masked + Dice_masked).
     """
     dtype = logits.dtype
     # 1. BCE Loss confined to the dilated mask with class-weighted positives
@@ -376,7 +522,19 @@ def compute_spoco_loss(logits, targets, roi_mask, pos_weight=1.0):
 
 def compute_dice_score(logits, targets, threshold=0.0):
     """
-    Computes global Dice Coefficient directly on full-volume logits vs targets.
+    Signature:
+        compute_dice_score(logits: torch.Tensor, targets: torch.Tensor, threshold: float) -> torch.Tensor
+
+    Objective:
+        Compute global mean Dice Coefficient directly over full-volume logits and targets.
+
+    Inputs:
+        logits (torch.Tensor): Pre-sigmoid logit tensor.
+        targets (torch.Tensor): Target binary tensor.
+        threshold (float): Logit binarization threshold. Default 0.0.
+
+    Outputs:
+        torch.Tensor: Scalar mean Dice score tensor.
     """
     probs = (logits > threshold).float()
     targets_f = targets.float()
@@ -388,8 +546,19 @@ def compute_dice_score(logits, targets, threshold=0.0):
 
 def compute_mpr_consistency_loss(student_probs, teacher_probs, roi_mask):
     """
-    MPR Consistency Loss. Computes mean consistency (MSE) over Axial, Coronal,
-    and Sagittal max-projections in unannotated regions.
+    Signature:
+        compute_mpr_consistency_loss(student_probs: torch.Tensor, teacher_probs: torch.Tensor, roi_mask: torch.Tensor) -> torch.Tensor
+
+    Objective:
+        Compute Multi-Planar Projection (MPR) consistency loss (MSE) across unannotated background regions.
+
+    Inputs:
+        student_probs (torch.Tensor): Student network probability predictions.
+        teacher_probs (torch.Tensor): Teacher network probability predictions.
+        roi_mask (torch.Tensor): Dilated ROI mask isolating annotated regions to ignore.
+
+    Outputs:
+        torch.Tensor: Scalar MSE consistency loss averaged across Axial, Coronal, and Sagittal max-projections.
     """
     dtype = student_probs.dtype
     # Isolate unannotated background region
@@ -416,7 +585,19 @@ def compute_mpr_consistency_loss(student_probs, teacher_probs, roi_mask):
 
 def get_consistency_weight(epoch, max_weight=10.0, warm_up_epochs=5):
     """
-    Computes a sigmoid warm-up weight scaling factor for consistency loss.
+    Signature:
+        get_consistency_weight(epoch: int, max_weight: float, warm_up_epochs: int) -> float
+
+    Objective:
+        Compute sigmoid warm-up scaling factor for consistency loss at current training epoch.
+
+    Inputs:
+        epoch (int): Current epoch index.
+        max_weight (float): Target maximum consistency loss weight. Default 10.0.
+        warm_up_epochs (int): Number of warmup epochs. Default 5.
+
+    Outputs:
+        float: Computed consistency weight scaling factor.
     """
     if warm_up_epochs == 0:
         return max_weight
@@ -430,6 +611,7 @@ def get_consistency_weight(epoch, max_weight=10.0, warm_up_epochs=5):
 
 
 def main():
+    """Main CLI entry point for VoxTell Mean Teacher PyTorch fine-tuning and validation loops."""
     parser = argparse.ArgumentParser(description="VoxTell Mean Teacher Training")
     parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")

@@ -10,9 +10,18 @@ STRIP_MODIFIERS = [
 
 def clean_finding_prompt(text: str) -> str:
     """
-    Hybrid Medical Prompt Normalizer:
-    Strips non-diagnostic clinical modifiers & measurements while preserving
-    core finding entities and anatomical locations.
+    Signature:
+        clean_finding_prompt(text: str) -> str
+
+    Objective:
+        Strip non-diagnostic clinical modifiers & measurement expressions from free-text radiology
+        finding prompts while preserving core finding entities and anatomical locator descriptors.
+
+    Inputs:
+        text (str): Raw free-text radiology report finding description.
+
+    Outputs:
+        str: Normalized finding prompt text string.
     """
     cleaned = text
     

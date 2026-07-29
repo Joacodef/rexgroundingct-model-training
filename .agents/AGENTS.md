@@ -38,12 +38,13 @@ You MUST always run persistent tasks in one of the following ways:
 * Preprocessed training inputs should reside in fast local temporary storage (`/tmp/rexgroundingct_preprocessed/` or fast SSD cache) to bypass slow CPU decompression bounds.
 
 ### 4. Spatial Alignment & 4D Back-Reorientation Contract
-* Predictions are made in RAS space but the Ground Truth CT masks contain an identity affine metadata bug. You **MUST** apply the 4D Back-Reorientation pipeline in `exp_001_voxtell_inference.py` to map segmentations back to the original CT scan space using the original raw affine matrix before running evaluation or generating a submission.
+* Predictions are generated in isotropic RAS space, but Ground Truth CT masks contain scan-specific affine metadata. You **MUST** apply 4D Back-Reorientation to map model predictions back to original raw CT coordinate space before running metric evaluation or generating submission files.
 
 ### 5. Directory & Structure Conventions
 * `scripts/`: Categorized into shared utilities (`common/`) and phase-specific execution pipelines (`phase_2a_rule_based/`, `phase_2b_voxtell/`, `phase_3_training/`).
 * `logs/`: Evaluation and audit logs mirroring the script subdirectories (`common/`, `phase_2a_rule_based/`, `phase_2b_voxtell/`, `phase_3_training/`).
 * **Experiment Log Pairing**: Experiment scripts follow `exp_XXX_<description>.py` and pair 1:1 with corresponding evaluation logs `logs/<phase>/exp_XXX_<description>.md`.
+* **Function Signature & Docstring Directive**: Standard library/utility functions and class methods MUST include a docstring as their very first statement outlining the function signature, a concise explanation of what the function does, its input arguments, and expected return outputs (boilerplate CLI helpers like `main()` and `parse_args()` only require a concise high-level docstring without a signature block).
 
 ---
 
@@ -52,4 +53,4 @@ You MUST always run persistent tasks in one of the following ways:
 * **Non-Prescriptive Scientific Inquiry Directive**: Technical, mathematical, or infrastructural constraints (e.g., 4D Back-Reorientation coordinate math, fast SSD volume caching, patient-level split hygiene) MUST be strictly enforced as non-negotiable contracts. Conversely, algorithmic, loss-level, or post-processing choices (e.g., specific loss functions, fixed volume noise pruning thresholds, or binarization cutoffs) MUST NEVER be framed as dogmatic or mandatory prescriptions. Modeling strategies attempting to solve data challenges must be framed as testable hypotheses (e.g., Hypothesis H1 vs H2) to allow open scientific discovery and prevent bias when seeking optimal solutions.
 * **Git Commit & Push Approval Protocol**: NEVER execute `git commit` or `git push` automatically. You MUST always ask the USER for explicit permission before staging, committing, or pushing code or documentation changes.
 * **Relative Path Directive**: ALL documentation, markdown files, and codebase scripts MUST strictly use **relative paths** (e.g., `scripts/phase_2b_voxtell/exp_001_voxtell_inference.py`).
-* **Master Plan Abstraction Directive**: The master plan (`.agents/shared/MASTER_PLAN.md`) MUST be maintained strictly as a big-picture, high-level scientific and technical roadmap. It MUST NOT contain references to specific file paths, script names, or implementation conventions (which belong exclusively in `AGENTS.md` or `scripts/README.md`).
+* **Master Plan Abstraction Directive**: The master plan (`.agents/shared/MASTER_PLAN.md`) MUST be maintained strictly as a big-picture, high-level scientific and technical roadmap. It MUST NOT contain references to specific file paths, script names, or implementation conventions (which belong exclusively in `AGENTS.md` or `README.md`).

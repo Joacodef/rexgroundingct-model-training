@@ -16,7 +16,7 @@ def main():
     
     # Dynamic visible devices for SLURM compatibility
     env = os.environ.copy()
-    cuda_dev = os.getenv("CUDA_VISIBLE_DEVICES", "2") # Default to 2 on Jumbito to run on the free Ada GPU
+    cuda_dev = os.getenv("CUDA_VISIBLE_DEVICES", "1") # Respect host GPU isolation spec (CUDA_VISIBLE_DEVICES=1)
     env["CUDA_VISIBLE_DEVICES"] = cuda_dev
     
     checkpoint_path = args.checkpoint

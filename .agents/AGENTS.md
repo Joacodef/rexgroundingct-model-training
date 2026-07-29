@@ -7,6 +7,7 @@ At the start of **EVERY SINGLE SESSION**, you MUST immediately load, read, and f
 1. `STATUS.md` — Host-specific macro progress matrix tracking advancement across Phase 2 & 3, experiment logs, and local server storage.
 2. `HANDSHAKE.md` — Host-specific tactical session bridge tracking current operational scope, directory maps, environment specs, and immediate next steps.
 3. `shared/MASTER_PLAN.md` — Global scientific and technical roadmap.
+4. `shared/PHASE_1_DATA_ANALYSIS_SUMMARY.md` — Consolidated Phase 1 empirical data distributions, spatial coordinates, HU radiodensity spectrum, morphological topology, and multi-label co-occurrences.
 
 ---
 
@@ -43,5 +44,7 @@ You MUST always run persistent tasks in one of the following ways:
 
 ## 🧠 Behavior & Epistemic Modesty
 * **Epistemic Modesty**: All preliminary empirical observations use calibrated, modest phrasing (*"initial evidence suggests"*, *"preliminary tests indicate"*).
+* **Non-Prescriptive Scientific Inquiry Directive**: Technical, mathematical, or infrastructural constraints (e.g., 4D Back-Reorientation coordinate math, fast SSD volume caching, patient-level split hygiene) MUST be strictly enforced as non-negotiable contracts. Conversely, algorithmic, loss-level, or post-processing choices (e.g., specific loss functions, fixed volume noise pruning thresholds, or binarization cutoffs) MUST NEVER be framed as dogmatic or mandatory prescriptions. Modeling strategies attempting to solve data challenges must be framed as testable hypotheses (e.g., Hypothesis H1 vs H2) to allow open scientific discovery and prevent bias when seeking optimal solutions.
 * **Git Commit & Push Approval Protocol**: NEVER execute `git commit` or `git push` automatically. You MUST always ask the USER for explicit permission before staging, committing, or pushing code or documentation changes.
 * **Relative Path Directive**: ALL documentation, markdown files, and codebase scripts MUST strictly use **relative paths** (e.g., `scripts/voxtell/voxtell_inference.py`).
+

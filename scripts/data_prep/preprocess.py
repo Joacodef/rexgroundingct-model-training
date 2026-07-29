@@ -196,8 +196,8 @@ def main():
                     f"  dataset.json declares {f_expected} findings, but loaded mask has {f_real} channels.\n"
                     f"  Loaded CT Shape  : {data['image'].shape}\n"
                     f"  Loaded Seg Shape : {data['label'].shape}\n"
-                    f"  Please read TROUBLESHOOTING_SHAPE_MISMATCH.md or run the diagnostic utility:\n"
-                    f"  python scripts/data_prep/diagnose_dataset.py --split {args.split}"
+                    f"  Please run the diagnostic utility:\n"
+                    f"  python scratch/phase_3_fine_tuning/proof_of_concept/data_utils/diagnose_dataset.py --split {args.split}"
                 )
                 logger.error(error_msg)
                 raise AssertionError(error_msg)

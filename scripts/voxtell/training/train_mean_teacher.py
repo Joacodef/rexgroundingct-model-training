@@ -103,8 +103,9 @@ class ReXDataset(Dataset):
         seg_path = os.path.join(self.seg_dir, f"{scan_id}.nii.gz")
         
         # Fast local SSD-based volume caching to bypass CPU-bound Gzip decompression
+        tmp_prep_dir = os.getenv("TMP_PREP_DIR", "/tmp/rexgroundingct_preprocessed")
         ssd_cache_dir = os.path.join(
-            os.environ["TMP_PREP_DIR"],
+            tmp_prep_dir,
             f"volume_cache_{self.preprocessing_hash}"
         )
         os.makedirs(ssd_cache_dir, exist_ok=True)
@@ -444,11 +445,11 @@ def main():
     parser.add_argument("--val-only", action="store_true", help="Run only the validation loop on the loaded checkpoint")
     args = parser.parse_args()
 
-    # Paths isolation
-    dataset_json = os.environ["DATASET_JSON"]
-    model_dir = os.environ["MODEL_DIR"]
-    img_dir = os.environ["IMG_RAW_DIR"]
-    seg_dir = os.environ["SEG_RAW_DIR"]
+    # Paths isolation (with fallback defaults matching scripts/config.py)
+    dataset_json = os.getenv("DATASET_JSON", "../data/dataset.json")
+    model_dir = os.getenv("MODEL_DIR", "../models/voxtell_v1.1")
+    img_dir = os.getenv("IMG_RAW_DIR", "../data/raw/images")
+    seg_dir = os.getenv("SEG_RAW_DIR", "../data/raw/segmentations")
     cache_dir = os.path.join(os.path.dirname(dataset_json), "text_cache")
 
     # If model_dir points to voxtell_v1.0 but voxtell_v1.1 exists, redirect to it

@@ -1,19 +1,31 @@
 import os
+import sys
 import json
 import argparse
 import logging
+from pathlib import Path
 from tqdm import tqdm
 from dotenv import load_dotenv
 from monai.transforms import Compose, LoadImaged, Orientationd, Spacingd, SaveImage, EnsureChannelFirstd, MapTransform
 from monai.data import Dataset, DataLoader, decollate_batch
 
+# Resolve repository root
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from scripts.config import (
+    DATASET_JSON, RAW_IMAGES_DIR, RAW_MASKS_DIR, 
+    TMP_PREP_DIR, PREPROCESSED_DIR, LOGS_DIR
+)
+
 # Configure logging
-os.makedirs("logs/common", exist_ok=True)
+(LOGS_DIR / "common").mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("logs/common/preprocess.log", mode="a", encoding="utf-8"),
+        logging.FileHandler(str(LOGS_DIR / "common" / "preprocess.log"), mode="a", encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
@@ -22,23 +34,23 @@ logger = logging.getLogger("preprocess")
 # Load environment variables from .env file
 load_dotenv(override=True)
 
-# Dynamic paths from .env
-DATASET_JSON = os.environ["DATASET_JSON"]
-IMG_DIR = os.environ["IMG_RAW_DIR"] 
-SEG_DIR = os.environ["SEG_RAW_DIR"]
-TMP_PREP_DIR = os.environ["TMP_PREP_DIR"]
-DATA_PREP_DIR = os.environ["DATA_PREP_DIR"]
+# Dynamic paths from scripts.config
+DATASET_JSON = str(DATASET_JSON)
+IMG_DIR = str(RAW_IMAGES_DIR)
+SEG_DIR = str(RAW_MASKS_DIR)
+TMP_PREP_DIR = str(TMP_PREP_DIR) if TMP_PREP_DIR else None
+DATA_PREP_DIR = str(PREPROCESSED_DIR) if PREPROCESSED_DIR else None
 
-# Determine output directory based on environment (Jumbito vs ih-condor)
+# Determine output directory based on environment (fast SSD cache vs persistent storage)
 if TMP_PREP_DIR:
     OUT_DIR = TMP_PREP_DIR
-    logger.info(f"Jumbito mode detected. Writing tensors to volatile space: {OUT_DIR}")
+    logger.info(f"Fast SSD cache mode detected. Writing tensors to: {OUT_DIR}")
 elif DATA_PREP_DIR:
     OUT_DIR = DATA_PREP_DIR
-    logger.info(f"ih-condor mode detected. Writing tensors to persistent storage: {OUT_DIR}")
+    logger.info(f"Persistent storage mode detected. Writing tensors to: {OUT_DIR}")
 else:
-    logger.error("Configuration error: Neither TMP_PREP_DIR nor DATA_PREP_DIR detected in local .env.")
-    raise ValueError("Configuration error: Neither TMP_PREP_DIR nor DATA_PREP_DIR detected in local .env.")
+    logger.error("Configuration error: Neither TMP_PREP_DIR nor PREPROCESSED_DIR resolved.")
+    raise ValueError("Configuration error: Neither TMP_PREP_DIR nor PREPROCESSED_DIR resolved.")
 
 os.makedirs(OUT_DIR, exist_ok=True)
 

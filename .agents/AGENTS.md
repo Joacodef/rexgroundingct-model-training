@@ -2,6 +2,11 @@
 
 As the AI pair-programming assistant for the ReXGroundingCT Model Training & Fine-Tuning Workspace, these are your global operating constraints and repository-wide rules.
 
+## 🚨 PRIME DIRECTIVE: Post-Edit Compliance Auditing
+* **Mandatory Post-Edit Compliance Verification**: After creating or modifying any codebase script (`scripts/`) or experiment log file (`logs/`), you MUST immediately perform a self-audit to verify full compliance with all contracts, naming conventions, relative path directives, function signature docstrings, and 1:1 experiment subfolder pairing rules defined in `AGENTS.md`.
+
+---
+
 ## Mandatory File Consultation Protocol
 At the start of **EVERY SINGLE SESSION**, you MUST immediately load, read, and follow the active documents inside the `.agents/` folder:
 1. `STATUS.md` — Host-specific macro progress matrix tracking advancement across Phase 2 & 3, experiment logs, and local server storage.
@@ -37,8 +42,10 @@ You MUST always run persistent tasks in one of the following ways:
 ### 3. Fast Storage Caching
 * Preprocessed training inputs should reside in fast local temporary storage (`/tmp/rexgroundingct_preprocessed/` or fast SSD cache) to bypass slow CPU decompression bounds.
 
-### 4. Spatial Alignment & 4D Back-Reorientation Contract
-* Predictions are generated in isotropic RAS space, but Ground Truth CT masks contain scan-specific affine metadata. You **MUST** apply 4D Back-Reorientation to map model predictions back to original raw CT coordinate space before running metric evaluation or generating submission files.
+### 4. Spatial Alignment & Canonical RAS Reorientation Contract
+* **Canonical Header Reorientation (`nib.as_closest_canonical`)**: Predictions and ground-truth segmentations MUST be loaded and reoriented using Nibabel's built-in header canonicalizer (`nib.as_closest_canonical(nii)`).
+* **PROHIBITED: Naive Shape Checks & Custom Transposes**: NEVER rely on array shape equality checks (e.g. `shape == (512, 512, 456)`) or manual array dimension transposes to determine spatial orientation. Because CT transverse planes are symmetric ($X=512, Y=512$), shape checks pass silently even when axes are rotated $90^\circ$ or inverted.
+* **4D Back-Reorientation**: Map model predictions back to original raw CT coordinate space using canonical RAS alignment before running metric evaluation (`scripts/common/evaluate.py`) or generating submission files.
 
 ### 5. Directory & Structure Conventions
 * `scripts/`: Categorized into shared utilities (`common/`) and phase-specific execution pipelines (`phase_2a_rule_based/`, `phase_2b_voxtell/`, `phase_3_training/`).

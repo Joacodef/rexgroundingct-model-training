@@ -24,6 +24,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR") or (PARENT_DIR / "data" if (PARENT_DIR / "
 MODELS_DIR = Path(os.getenv("MODELS_DIR") or (PARENT_DIR / "models" if (PARENT_DIR / "models").exists() else ROOT_DIR / "models"))
 LOGS_DIR = ROOT_DIR / "logs"
 SCRATCH_DIR = ROOT_DIR / "scratch"
+VISUALIZATIONS_DIR = ROOT_DIR / "scan_visualizations"
 
 # 4. Core Dataset & Asset Paths (Env Override -> Fallback to project relative default)
 DATASET_JSON = Path(os.getenv("DATASET_JSON") or (DATA_DIR / "dataset.json"))

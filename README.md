@@ -14,38 +14,18 @@ Dedicated research workspace for **Phase 2 Baseline Audits & Phase 3 Model Fine-
 ```text
 rexgroundingct-model-training/
 ├── .agents/                    # Agentic rules, host setup docs, and governance
-│   ├── shared/                 # Server-agnostic master plan and paper digests
-│   ├── AGENTS.md               # Repository operating rules & governance
-│   ├── STATUS.md               # Local active macro progress matrix
-│   ├── HANDSHAKE.md            # Tactical session bridge & transition handoff
-│   └── server_documentation.txt# Host server hardware setup & guides
-├── logs/                       # Baseline audit & training execution logs (per-experiment subfolders)
-│   ├── common/                 # System logs and shared utility diagnostics
+│   └── shared/                 # Server-agnostic master plan and paper digests
+├── logs/                       # Baseline audit & training execution logs
 │   ├── phase_2a_rule_based/    # Phase 2A non-neural baseline evaluation logs
-│   │   └── exp_001_seg_masks_priors/ # Dedicated experiment subfolder (eval.md, eval_results_val.json, run.log)
 │   ├── phase_2b_voxtell/       # Phase 2B VoxTell zero-shot baseline audit logs
-│   │   └── exp_001_voxtell_inference/
 │   └── phase_3_training/       # Phase 3 Mean Teacher fine-tuning logs
-│       └── exp_001_train_mean_teacher/
-├── scratch/                    # Fine-tuning scratch scripts & evaluation tools
+├── scratch/                    # Fine-tuning scratch scripts & temporary evaluation tools
 ├── scripts/                    # Core inference, training, & dataloading pipeline
-│   ├── config.py               # Dynamic path resolver (shared ../data/ and ../models/)
-│   ├── common/                 # Shared pipelines & utilities
-│   │   ├── analyze_predictions.py # Diagnostic profiler & 2D qualitative failure snapshot generator
-│   │   ├── evaluate.py         # Official challenge metric evaluator (Dice & Hit Rate)
-│   │   ├── preprocess.py       # MONAI patch cropping, text cache, & volume processing
-│   │   └── prompt_normalizer.py# Radiology report prompt normalization
-│   ├── phase_2a_rule_based/    # Phase 2A non-neural statistical baseline
-│   │   └── exp_001_seg_masks_priors/ # Dedicated experiment module
-│   │       ├── prior_engine.py # Core 3D spatial PDF baseline class & threshold config
-│   │       ├── 01_build_spatial_pdf_cache.py # Task 1: 3D spatial heatmap accumulator
-│   │       └── 02_run_inference_and_eval.py  # Tasks 2 & 3: Resample, threshold, & evaluate
-│   ├── phase_2b_voxtell/       # Phase 2B VoxTell baseline & zero-shot audit
-│   │   └── exp_001_voxtell_inference.py # VoxTell v1.1 sliding window inference
-│   └── phase_3_training/       # Phase 3 PyTorch semi-supervised fine-tuning
-│       └── exp_001_train_mean_teacher.py # Mean Teacher + PU SPOCO fine-tuning trainer
+│   ├── common/                 # Shared pipelines, evaluators, & multi-angle visualizer
+│   ├── phase_2a_rule_based/    # Phase 2A non-neural statistical baseline pipeline
+│   ├── phase_2b_voxtell/       # Phase 2B VoxTell zero-shot baseline audit pipeline
+│   └── phase_3_training/       # Phase 3 PyTorch semi-supervised fine-tuning pipeline
 ├── .env.example                # Environment variable configuration template
-├── .env                        # Local environment settings (untracked by git)
 └── README.md                   # Primary repository documentation
 ```
 
@@ -57,8 +37,6 @@ rexgroundingct-model-training/
 Activate the primary host Conda virtual environment (`voxtell_env`):
 ```bash
 conda activate voxtell_env
-# Or run explicitly with full python binary path:
-# /home/jdeferrari/miniconda3/envs/voxtell_env/bin/python
 ```
 
 If setting up a local virtual environment:
@@ -98,6 +76,12 @@ python scripts/common/analyze_predictions.py \
     --top_k_failures 10 \
     --save_snapshots \
     --output_dir logs/phase_2a_rule_based/exp_001_seg_masks_priors/failure_snapshots
+```
+
+#### 3D/2D Rotational Visualizer & Downloadable NIfTI ZIP Exporter
+Generate per-pathology multi-angle 3D rotational viewports, 2D CT slice overlays, and 3D-dimension-matched NIfTI bundles saved to `scan_visualizations/<scan_id>/`:
+```bash
+python scripts/common/plot_single_case.py --scan_id train_19891_a_2
 ```
 
 ### 3. Metric Evaluation

@@ -70,3 +70,9 @@ checkpoints/
 nohup.out
 screenlog.0
 *.pid
+
+# Scratch outputs & generated figure images
+scratch/output/
+scan_visualizations/
+scan_visualization/
+*.png

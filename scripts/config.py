@@ -1,9 +1,11 @@
 """
-Centralized Configuration & Path Management for ReXGroundingCT.
-
-This module provides a single source of truth for all dataset, model,
-and log directories. Paths are dynamically computed relative to the project root,
-with priority given to environment variable overrides (e.g., from local .env or cluster environments).
+===============================================================================
+MODULE:         Centralized Path & Environmental Configuration
+LOCATION:       scripts/config.py
+OBJECTIVE:      Single source of truth for dataset, model, and log directories.
+                Paths are dynamically resolved relative to repository root with
+                environment variable overrides.
+===============================================================================
 """
 
 import os

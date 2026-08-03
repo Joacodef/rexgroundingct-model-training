@@ -1,12 +1,12 @@
 """
-VoxTell Mean Teacher Training Pipeline for ReXGroundingCT.
-
-This script implements Phase 2 Task 1 of ReXGroundingCT:
-1. Pre-computes and caches Qwen text embeddings for all prompts.
-2. Initializes Student and Teacher VoxTell networks from v1.1 weights.
-3. Implements native resolution patch-based dataloaders with positive-centered cropping.
-4. Updates the Teacher network via Exponential Moving Average (EMA).
-5. Runs training epochs and saves checkpoints.
+===============================================================================
+SCRIPT:         VoxTell Mean Teacher Consistency Training Pipeline
+PHASE:          Phase 3 — Model Fine-Tuning & Adaptation
+LOCATION:       scripts/phase_3_training/exp_001_train_mean_teacher.py
+OBJECTIVE:      Fine-tunes VoxTell using student-teacher EMA consistency loss 
+                to handle partial annotation suppression bias on 3D CT scans.
+USAGE:          python scripts/phase_3_training/exp_001_train_mean_teacher.py
+===============================================================================
 """
 
 import os

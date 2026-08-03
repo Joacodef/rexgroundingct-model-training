@@ -21,7 +21,7 @@ rexgroundingct-model-training/
 │   └── phase_3_training/       # Phase 3 Mean Teacher fine-tuning logs
 ├── scratch/                    # Fine-tuning scratch scripts & temporary evaluation tools
 ├── scripts/                    # Core inference, training, & dataloading pipeline
-│   ├── common/                 # Shared pipelines, evaluators, & multi-angle visualizer
+│   ├── common/                 # Spatial engine (orientation.py), evaluators, & visualizers
 │   ├── phase_2a_rule_based/    # Phase 2A non-neural statistical baseline pipeline
 │   ├── phase_2b_voxtell/       # Phase 2B VoxTell zero-shot baseline audit pipeline
 │   └── phase_3_training/       # Phase 3 PyTorch semi-supervised fine-tuning pipeline
@@ -60,7 +60,7 @@ python scripts/phase_2a_rule_based/exp_001_seg_masks_priors/02_run_inference_and
 ```
 
 #### Phase 2B: Zero-Shot VoxTell Baseline Inference
-Run sliding window inference with 4D Back-Reorientation on validation scans:
+Run sliding window inference on validation scans with canonical RAS spatial alignment (`scripts/common/orientation.py`):
 ```bash
 python scripts/phase_2b_voxtell/exp_001_voxtell_inference.py
 ```

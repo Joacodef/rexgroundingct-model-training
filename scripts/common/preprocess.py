@@ -1,3 +1,13 @@
+"""
+===============================================================================
+SCRIPT:         Batch 3D Volume Preprocessing & Fast Caching Engine
+LOCATION:       scripts/common/preprocess.py
+OBJECTIVE:      Preprocess raw 3D CT scans into fast SSD temporary storage 
+                (/tmp/rexgroundingct_preprocessed/) or persistent storage, 
+                performing spatial canonicalization and Z-score normalization.
+USAGE:          python scripts/common/preprocess.py
+===============================================================================
+"""
 import os
 import sys
 import json

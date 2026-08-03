@@ -1,12 +1,14 @@
 """
-Local Evaluation Script for ReXGroundingCT Challenge Metrics.
-
-This script calculates the primary ranking metric (Average Dice) and the
-Hit Rate (threshold 0.1, as specified by the official MICCAI challenge rules) 
-over the 4D predictions (F, H, W, D).
-
-It serves as a lightweight local alternative to the official evaluator 
-for quick local validation loops during baseline and methodology development.
+===============================================================================
+SCRIPT:         Local Challenge Metric Evaluator
+LOCATION:       scripts/common/evaluate.py
+OBJECTIVE:      Calculates primary challenge ranking metric (Average Dice) 
+                and Hit Rate (threshold 0.1) across 4D predictions (F, X, Y, Z).
+USAGE:          python scripts/common/evaluate.py \
+                    --gt_dir ../data/raw/segmentations \
+                    --pred_dir ../data/predictions/phase_2a_rule_based \
+                    --split val
+===============================================================================
 """
 
 import os

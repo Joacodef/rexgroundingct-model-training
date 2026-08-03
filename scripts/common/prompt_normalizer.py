@@ -1,3 +1,11 @@
+"""
+===============================================================================
+MODULE:         Radiology Text Prompt Normalizer & Cleaner
+LOCATION:       scripts/common/prompt_normalizer.py
+OBJECTIVE:      Normalizes free-text radiology report finding prompts by stripping 
+                non-diagnostic clinical modifier adjectives and measurement phrases.
+===============================================================================
+"""
 import re
 
 # Adjective & hedge modifiers to strip

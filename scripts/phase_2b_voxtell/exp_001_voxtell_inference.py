@@ -1,16 +1,13 @@
 """
-VoxTell Batch Zero-Shot Inference Pipeline for ReXGroundingCT.
-
-This script performs batch inference using the VoxTell model on preprocessed 
-3D CT scans, generating 4D segmentation masks (F, H, W, D) guided by free-text 
-prompts. It ensures strict positional alignment with the ground truth JSON 
-to maintain compatibility with the official `rexrank_eval.py` script.
-
-Input/Output Contract:
-- Inputs: Configuration relies exclusively on environment variables loaded via 
-  `.env` (MODEL_DIR, DATA_PREP_DIR, DATA_PRED_DIR, DATASET_JSON). Optional 
-  `--split` CLI argument is available to target specific dataset partitions.
-- Outputs: 4D NIfTI files saved in `DATA_PRED_DIR` preserving the original affine matrix.
+===============================================================================
+SCRIPT:         VoxTell Batch Zero-Shot Baseline Inference Pipeline
+PHASE:          Phase 2B — VoxTell Zero-Shot Baseline & Preprocessing Audit
+LOCATION:       scripts/phase_2b_voxtell/exp_001_voxtell_inference.py
+OBJECTIVE:      Performs batch inference using pre-trained VoxTell v1.1 model on 
+                3D CT scans, generating 4D segmentation masks (F, X, Y, Z) 
+                guided by free-text radiology prompts.
+USAGE:          python scripts/phase_2b_voxtell/exp_001_voxtell_inference.py --split val
+===============================================================================
 """
 
 

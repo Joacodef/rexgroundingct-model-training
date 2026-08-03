@@ -1,11 +1,11 @@
 """
 ===============================================================================
 SCRIPT:         Shared 3D/2D Rotational Visualizer Engine
-LOCATION:       scripts/common/plot_single_case.py
+LOCATION:       scripts/analysis/plot_single_case.py
 OBJECTIVE:      Generates multi-angle 3D isometric surface renderings and 2D CT 
                 slice overlays per finding category for single CT scans. Exports 
                 high-contrast PNG figures and 3D NIfTI bundles to scan_visualizations/.
-USAGE:          python scripts/common/plot_single_case.py --scan_id train_19891_a_2
+USAGE:          python scripts/analysis/plot_single_case.py --scan_id train_19891_a_2
 ===============================================================================
 """
 import os

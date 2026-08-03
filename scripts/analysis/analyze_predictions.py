@@ -1,6 +1,7 @@
 """
 ===============================================================================
 SHARED UTILITY:   3D/4D Prediction & Segmentation Mask Analyzer
+LOCATION:         scripts/analysis/analyze_predictions.py
 OBJECTIVE:        Unified quantitative profiling and qualitative failure 
                   analysis tool for 3D/4D CT grounding segmentation masks 
                   (VoxTell, Rule-Based Priors, Mean Teacher, GT masks).
@@ -10,7 +11,7 @@ FEATURES:         - Quantitative: Dice, Hit Rate, Precision, Recall, Volumetric
                   - Qualitative: Top-K worst failure case harvesting and 2D slice 
                     snapshot generator (Axial/Coronal CT overlays: GT green, Pred red).
                   - Single-scan CLI inspection mode (--inspect_scan).
-USAGE:            python scripts/common/analyze_predictions.py \
+USAGE:            python scripts/analysis/analyze_predictions.py \
                       --pred_dir ../data/predictions/phase_2b_voxtell \
                       --gt_dir ../data/raw/segmentations \
                       --img_dir ../data/raw/images \

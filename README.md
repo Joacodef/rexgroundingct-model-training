@@ -68,7 +68,7 @@ python scripts/phase_2b_voxtell/exp_001_voxtell_inference.py
 #### Diagnostic Failure Snapshot Generator
 Harvest 2D qualitative slice snapshots for top-K worst prediction failures:
 ```bash
-python scripts/common/analyze_predictions.py \
+python scripts/analysis/analyze_predictions.py \
     --pred_dir ../data/predictions/phase_2a_rule_based \
     --gt_dir ../data/raw/segmentations \
     --img_dir ../data/raw/images \
@@ -81,7 +81,7 @@ python scripts/common/analyze_predictions.py \
 #### 3D/2D Rotational Visualizer & Downloadable NIfTI ZIP Exporter
 Generate per-pathology multi-angle 3D rotational viewports, 2D CT slice overlays, and 3D-dimension-matched NIfTI bundles saved to `scan_visualizations/<scan_id>/`:
 ```bash
-python scripts/common/plot_single_case.py --scan_id train_19891_a_2
+python scripts/analysis/plot_single_case.py --scan_id train_19891_a_2
 ```
 
 ### 3. Metric Evaluation

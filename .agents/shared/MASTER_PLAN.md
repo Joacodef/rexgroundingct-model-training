@@ -37,7 +37,7 @@
     * **HU Radiodensity Windowing**: Intensity thresholding within category-specific HU bounds ($[\text{min\_HU}, \text{max\_HU}]$).
     * **Text Prompt Spatial Parsing**: NLP directive extraction mapping anatomical locators (e.g., *right lower lobe*, *apical*) to spatial sub-volumes.
     * **Morphological Component Filtering**: 3D connected component shape and volume constraints.
-  * **4D Back-Reorientation & Evaluation**: Apply standard 4D Back-Reorientation to map non-neural predictions to raw NIfTI space and evaluate on validation scans via official metrics.
+  * **Validation Benchmark Evaluation**: Evaluate non-neural statistical prior performance on validation scans to establish non-learning lower-bound benchmarks (Dice & Hit Rate).
 
 * **Key Deliverables**:
   1. *Statistical Prior Baseline Module*: Executable non-neural prior generator module.
@@ -45,7 +45,7 @@
 
 #### Phase 2B: VoxTell Zero-Shot Baseline & Preprocessing Audit
 * **Core Research Scope**:
-  * **Official Preprocessing & Reorientation Audit**: Validate 100% fidelity with official reorientation and 4D Back-Reorientation pipelines.
+  * **Zero-Shot Baseline Evaluation**: Establish official zero-shot validation benchmarks and inference fidelity across validation scans.
   * **Inference Dynamics & Sensitivity**: Evaluate sliding window parameters (tile step size, patch padding, Gaussian weighting) and continuous logit distributions.
   * **Per-Category Logit Calibration**: Profile pre-sigmoid probability distributions per finding category to optimize binarization thresholds ($p_c$).
   * **Category-Level Failure Analysis**: Systematic error audit across all 14 finding categories isolating spatial misalignment, text shift, or suppression bias relative to Phase 2A statistical baseline.

@@ -32,6 +32,7 @@ from scripts.config import (
     DATA_DIR, DATASET_JSON, RAW_IMAGES_DIR, RAW_MASKS_DIR, 
     PREDICTIONS_DIR, LOGS_DIR
 )
+from scripts.common.orientation import load_nifti_ras, save_nifti
 from scripts.phase_2a_rule_based.exp_001_seg_masks_priors.prior_engine import EmpiricalSpatialPDFBaseline
 
 
@@ -139,35 +140,36 @@ def main():
             missing_scans += 1
             continue
 
-        # 1. Read raw CT volume header & reorient to canonical RAS to get target shape (X, Y, Z)
-        raw_nii = nib.load(str(raw_nifti_path))
-        raw_nii_ras = nib.as_closest_canonical(raw_nii)
-        target_shape_xyz = raw_nii_ras.shape # (X, Y, Z)
-        original_affine = raw_nii.affine
+        # 1. Read raw CT volume in canonical RAS space using centralized spatial engine
+        raw_img_ras, raw_nii_ras, raw_axcodes = load_nifti_ras(raw_nifti_path)
+        target_shape_xyz = raw_img_ras.shape # (X, Y, Z)
 
-        # 2. Extract Finding Prompts
+        # 2. Extract Finding Prompts & Categories
         findings = entry.get("findings", {})
+        categories_dict = entry.get("categories", {})
+
         if isinstance(findings, dict):
             sorted_keys = sorted(findings.keys(), key=int)
             prompts = [findings[k].get("text", "") if isinstance(findings[k], dict) else str(findings[k]) for k in sorted_keys]
+            category_codes = [str(categories_dict.get(k, "")) for k in sorted_keys]
         else:
             prompts = [f.get("text", "") if isinstance(f, dict) else str(f) for f in findings]
+            category_codes = [str(categories_dict.get(str(i), "")) for i in range(len(prompts))]
 
         if not prompts:
             continue
 
         # 3. Generate 3D mask per finding prompt in (X, Y, Z) space
         finding_masks_xyz = []
-        for prompt in prompts:
-            mask_3d = predictor.generate_prediction_mask(target_shape_xyz, prompt) # shape: (X, Y, Z)
+        for prompt, cat_code in zip(prompts, category_codes):
+            mask_3d = predictor.generate_prediction_mask(target_shape_xyz, prompt, cat_code=cat_code) # shape: (X, Y, Z)
             finding_masks_xyz.append(mask_3d)
 
         # Stack to 4D array (F, X, Y, Z)
         pred_4d_fxyz = np.stack(finding_masks_xyz, axis=0).astype(np.uint8) # (F, X, Y, Z)
 
-        # Save NIfTI file with original CT affine
-        out_nii = nib.Nifti1Image(pred_4d_fxyz, original_affine)
-        nib.save(out_nii, str(out_nii_path))
+        # Save NIfTI file matching canonical RAS affine using centralized spatial engine
+        save_nifti(pred_4d_fxyz, out_nii_path, raw_nii_ras.affine)
         generated_count += 1
 
         # Explicit memory cleanup

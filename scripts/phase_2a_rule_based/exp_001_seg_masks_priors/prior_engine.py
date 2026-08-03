@@ -233,26 +233,43 @@ class EmpiricalSpatialPDFBaseline:
         for code, cat_name in CATEGORY_MAP.items():
             if cat_name.lower() in cleaned_text:
                 return code
-                
-        if "nodule" in cleaned_text or "mass" in cleaned_text:
-            return "2d"
-        elif "opacity" in cleaned_text or "consolidation" in cleaned_text:
+
+        # Specific keyword heuristics handling singular/plural & common variations
+        if "linear" in cleaned_text or "band" in cleaned_text or "scar" in cleaned_text or "fibrotic band" in cleaned_text:
+            return "2a"
+        elif "atelectasis" in cleaned_text or "consolidation" in cleaned_text or "collapse" in cleaned_text:
+            return "2b"
+        elif "ground-glass" in cleaned_text or "ground glass" in cleaned_text or "ggo" in cleaned_text:
             return "2c"
-        elif "effusion" in cleaned_text:
+        elif "nodule" in cleaned_text or "mass" in cleaned_text or "lesion" in cleaned_text:
+            return "2d"
+        elif "effusion" in cleaned_text or "pleural fluid" in cleaned_text or "pleural thickening" in cleaned_text:
             return "2e"
+        elif "honeycomb" in cleaned_text:
+            return "2f"
+        elif "pneumothorax" in cleaned_text:
+            return "2g"
+        elif "bronchial wall" in cleaned_text or "peribronchial" in cleaned_text:
+            return "1a"
+        elif "bronchiectasis" in cleaned_text or "bronchiectatic" in cleaned_text:
+            return "1b"
+        elif "emphysema" in cleaned_text or "emphysematous" in cleaned_text or "bullous" in cleaned_text:
+            return "1c"
+        elif "septal" in cleaned_text or "interstitial thickening" in cleaned_text or "reticulation" in cleaned_text:
+            return "1d"
+        elif "micronodule" in cleaned_text or "centrilobular nodule" in cleaned_text or "tree-in-bud" in cleaned_text:
+            return "1e"
         elif "thickening" in cleaned_text:
             return "1d"
-        elif "emphysema" in cleaned_text:
-            return "1c"
-        elif "bronch" in cleaned_text:
-            return "1a"
+        elif "opacity" in cleaned_text:
+            return "2c"
             
         return "2h"
 
-    def generate_prediction_mask(self, target_shape_ras: tuple, prompt_text: str) -> np.ndarray:
+    def generate_prediction_mask(self, target_shape_ras: tuple, prompt_text: str = "", cat_code: str = None) -> np.ndarray:
         """
         Signature:
-            generate_prediction_mask(target_shape_ras: tuple, prompt_text: str) -> np.ndarray
+            generate_prediction_mask(target_shape_ras: tuple, prompt_text: str, cat_code: str) -> np.ndarray
 
         Objective:
             Resample category 3D empirical PDF heatmap P_c to target scan's RAS shape, apply
@@ -261,11 +278,16 @@ class EmpiricalSpatialPDFBaseline:
         Inputs:
             target_shape_ras (tuple): Target 3D volume shape (Z, Y, X) in canonical RAS space.
             prompt_text (str): Free-text radiology report finding prompt.
+            cat_code (str): Explicit 14-category code string ('1a'..'2h'). If provided, overrides prompt matching.
 
         Outputs:
             np.ndarray: 3D uint8 binary prediction mask array with shape matching target_shape_ras.
         """
-        code = self.match_category_code(prompt_text)
+        if cat_code is not None and str(cat_code) in CATEGORY_MAP:
+            code = str(cat_code)
+        else:
+            code = self.match_category_code(prompt_text)
+
         pdf_np = self.spatial_pdfs.get(code, np.full(self.CANONICAL_SHAPE, 0.01, dtype=np.float32))
 
         # PyTorch 3D Interpolation to target RAS shape
@@ -294,3 +316,4 @@ class EmpiricalSpatialPDFBaseline:
                 binary_mask[too_small[labeled]] = 0
 
         return binary_mask.astype(np.uint8)
+

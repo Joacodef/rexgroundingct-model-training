@@ -42,10 +42,9 @@ You MUST always run persistent tasks in one of the following ways:
 ### 3. Fast Storage Caching
 * Preprocessed training inputs should reside in fast local temporary storage (`/tmp/rexgroundingct_preprocessed/` or fast SSD cache) to bypass slow CPU decompression bounds.
 
-### 4. Spatial Alignment & Canonical RAS Reorientation Contract
-* **Canonical Header Reorientation (`nib.as_closest_canonical`)**: Predictions and ground-truth segmentations MUST be loaded and reoriented using Nibabel's built-in header canonicalizer (`nib.as_closest_canonical(nii)`).
-* **PROHIBITED: Naive Shape Checks & Custom Transposes**: NEVER rely on array shape equality checks (e.g. `shape == (512, 512, 456)`) or manual array dimension transposes to determine spatial orientation. Because CT transverse planes are symmetric ($X=512, Y=512$), shape checks pass silently even when axes are rotated $90^\circ$ or inverted.
-* **4D Back-Reorientation**: Map model predictions back to original raw CT coordinate space using canonical RAS alignment before running metric evaluation (`scripts/common/evaluate.py`) or generating submission files.
+### 4. Centralized Spatial Alignment & Canonical RAS Orientation
+* **Centralized Spatial Engine (`scripts/common/orientation.py`)**: All NIfTI volumes (ground truth, images, and model predictions) MUST be loaded, inspected, and saved using the centralized spatial functions `load_nifti_ras()` and `save_nifti()`.
+* **Prohibited: Manual Transposes & Naive Shape Assertions**: NEVER rely on manual array transposes or naive shape checks (e.g. `shape == (512, 512, 456)`) to assume anatomical orientation. Always inspect and canonicalize spatial orientation using `scripts/common/orientation.py`.
 
 ### 5. Directory & Structure Conventions
 * `scripts/`: Categorized into shared utilities (`common/`) and phase-specific execution pipelines (`phase_2a_rule_based/`, `phase_2b_voxtell/`, `phase_3_training/`).

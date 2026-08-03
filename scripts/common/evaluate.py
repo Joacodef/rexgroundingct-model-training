@@ -31,6 +31,7 @@ from scripts.config import (
     DATA_DIR,
     CATEGORY_MAP
 )
+from scripts.common.orientation import load_nifti_ras
 
 CATEGORY_NAMES = CATEGORY_MAP
 
@@ -120,21 +121,15 @@ def main():
             missing_cases += 1
             continue
             
-        # Load images. Type casting to handle memory more efficiently.
-        gt_img = nib.load(gt_path).get_fdata(dtype=np.float32)
-        pred_img = nib.load(pred_path).get_fdata(dtype=np.float32)
+        # Load GT and Pred into canonical RAS space using centralized spatial engine
+        gt_img, _, _ = load_nifti_ras(gt_path)
+        pred_img, _, _ = load_nifti_ras(pred_path)
         
-        # --- SHAPE FIX: Auto-adjust GT dimensions to match expected (F, H, W, D) ---
-        # 1. Expand dims if 3D (missing finding channel because it was 1)
+        # Expand 3D volumes to 4D (1, X, Y, Z) if single finding
         if gt_img.ndim == 3:
-            gt_img = np.expand_dims(gt_img, axis=-1)  # Expand to pseudo 4D at the end (X, Y, Z, 1)
-            
-        # 2. Check if Findings channel is at the end (X, Y, Z, F) and move to front (F, X, Y, Z)
-        if gt_img.ndim == 4:
-            # We assume the smallest dimension is the findings channel.
-            # E.g. (X, Y, Z, F) -> F is at axis 3
-            if gt_img.shape[-1] < np.min(gt_img.shape[:-1]):
-                gt_img = np.moveaxis(gt_img, -1, 0)
+            gt_img = np.expand_dims(gt_img, axis=0)
+        if pred_img.ndim == 3:
+            pred_img = np.expand_dims(pred_img, axis=0)
                 
         # Validate dimensions (F, H, W, D)
         if gt_img.ndim != 4 or pred_img.ndim != 4:

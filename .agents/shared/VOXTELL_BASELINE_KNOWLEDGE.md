@@ -65,8 +65,7 @@ voxtell/
 ## 🔍 3. Inference & Spatial Pipeline Protocols
 
 1. **Spatial Reader & Alignment**:
-   * Uses `nnunetv2.imageio.nibabel_reader_writer.NibabelIOWithReorient` to enforce standard RAS space.
-   * Predictions are made in RAS space; final masks MUST undergo 4D Back-Reorientation to match original CT NIfTI metadata.
+   * Uses `nibabel` spatial canonicalization to process CT volumes in standard RAS coordinate space.
 
 2. **Intensity Preprocessing**:
    * Background cropped to non-zero regions via `crop_to_nonzero`.

@@ -95,22 +95,10 @@ def load_canonical_ras(nifti_path: Path, override_affine: np.ndarray = None) -> 
     Returns:
         np.ndarray: Reoriented RAS data array with 4D shape (channels, X, Y, Z).
     """
-    if override_affine is not None:
-        nii = nib.load(str(nifti_path))
-        nii_override = nib.Nifti1Image(nii.get_fdata(), override_affine)
-        nii_ras = nib.as_closest_canonical(nii_override)
-        data_ras = nii_ras.get_fdata(dtype=np.float32)
-        if data_ras.ndim == 3:
-            data_ras = np.expand_dims(data_ras, axis=0)
-        elif data_ras.ndim == 4:
-            if data_ras.shape[-1] < np.min(data_ras.shape[:3]) or data_ras.shape[-1] <= 64:
-                data_ras = np.moveaxis(data_ras, -1, 0)
-        return data_ras
-    else:
-        data_ras, _, _ = load_nifti_ras(nifti_path)
-        if data_ras.ndim == 3:
-            data_ras = np.expand_dims(data_ras, axis=0)
-        return data_ras
+    data_ras, _, _ = load_nifti_ras(nifti_path, ref_affine=override_affine)
+    if data_ras.ndim == 3:
+        data_ras = np.expand_dims(data_ras, axis=0)
+    return data_ras
 
 def load_dataset_metadata() -> dict:
     """
@@ -310,9 +298,9 @@ def select_gt_and_pred_max_slices(gt_mask: np.ndarray, pred_mask: np.ndarray, ax
 
     return s_gt, s_pred, label_gt, label_pred
 
-def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, fix_gt_affine: bool = False, window_preset: str = 'auto') -> Path:
+def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, fix_gt_affine: bool = True, window_preset: str = 'auto') -> Path:
     """
-    plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, fix_gt_affine: bool = False, window_preset: str = 'auto') -> Path
+    plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, fix_gt_affine: bool = True, window_preset: str = 'auto') -> Path
     Generates a per-pathology multi-row 2D cross-sectional visualization figure for a CT scan volume.
     Each active pathology gets its own row featuring 6 2D CT slice overlays across 3 orthogonal planes
     (Max GT and Max Pred slice per plane for Axial, Coronal, Sagittal) + 1 Pathology Statistics & Prompt Card.
@@ -322,7 +310,7 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
         meta_map (dict): Dataset metadata mapping.
         pred_dir (Path): Predictions directory.
         out_dir (Path): Output directory for saved PNG images.
-        fix_gt_affine (bool): If True, overrides GT mask header affine with raw image affine before canonical reorientation.
+        fix_gt_affine (bool): If True, overrides uninformative GT mask header affine with raw image affine before canonical reorientation.
         window_preset (str): Specified contrast window preset ('auto', 'lung', 'soft_tissue', 'bone', 'chest_default').
 
     Returns:
@@ -332,10 +320,12 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
     gt_path = RAW_MASKS_DIR / f"{scan_id}.nii.gz"
     pred_path = pred_dir / f"{scan_id}.nii.gz"
 
+    raw_img_nii = nib.load(str(img_path)) if img_path.exists() else None
+    raw_img_affine = raw_img_nii.affine if raw_img_nii is not None else None
+
     img_4d, img_nii_ras, _ = load_nifti_ras(img_path)
     if img_4d.ndim == 3:
         img_4d = np.expand_dims(img_4d, axis=0)
-    img_affine = img_nii_ras.affine
 
     # Extract physical voxel spacing (zooms) for true anatomical millimeter proportions
     raw_zooms = img_nii_ras.header.get_zooms()[:3]
@@ -347,8 +337,9 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
     aspect_coronal = dz / dx
     aspect_sagittal = dz / dy
 
-    gt_4d = load_canonical_ras(gt_path, override_affine=img_affine if fix_gt_affine else None)
-    pred_4d = load_canonical_ras(pred_path)
+    target_ref_affine = raw_img_affine if fix_gt_affine else None
+    gt_4d = load_canonical_ras(gt_path, override_affine=target_ref_affine)
+    pred_4d = load_canonical_ras(pred_path, override_affine=target_ref_affine)
 
     img_data = img_4d[0] # (X, Y, Z)
     num_findings = gt_4d.shape[0]
@@ -407,8 +398,8 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
             (2, img_data[:, :, z_pred].T, gt_mask[:, :, z_pred].T, pred_mask[:, :, z_pred].T, f"Axial [{lbl_z_pred}] (Z={z_pred})", aspect_axial),
             (3, img_data[:, y_gt, :].T, gt_mask[:, y_gt, :].T, pred_mask[:, y_gt, :].T, f"Coronal [{lbl_y_gt}] (Y={y_gt})", aspect_coronal),
             (4, img_data[:, y_pred, :].T, gt_mask[:, y_pred, :].T, pred_mask[:, y_pred, :].T, f"Coronal [{lbl_y_pred}] (Y={y_pred})", aspect_coronal),
-            (5, img_data[x_gt, ::-1, :].T, gt_mask[x_gt, ::-1, :].T, pred_mask[x_gt, ::-1, :].T, f"Sagittal [{lbl_x_gt}] (X={x_gt})", aspect_sagittal),
-            (6, img_data[x_pred, ::-1, :].T, gt_mask[x_pred, ::-1, :].T, pred_mask[x_pred, ::-1, :].T, f"Sagittal [{lbl_x_pred}] (X={x_pred})", aspect_sagittal),
+            (5, img_data[x_gt, :, :].T, gt_mask[x_gt, :, :].T, pred_mask[x_gt, :, :].T, f"Sagittal [{lbl_x_gt}] (X={x_gt})", aspect_sagittal),
+            (6, img_data[x_pred, :, :].T, gt_mask[x_pred, :, :].T, pred_mask[x_pred, :, :].T, f"Sagittal [{lbl_x_pred}] (X={x_pred})", aspect_sagittal),
         ]
 
         base_sub = row_idx * 7
@@ -473,14 +464,12 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
     red_patch = mpatches.Patch(color='crimson', alpha=0.7, label='Prediction Mask')
     fig.legend(handles=[green_patch, red_patch], loc='lower center', ncol=2, frameon=True, fontsize=10)
 
-    mode_str = "Fixed GT Affine" if fix_gt_affine else "Raw GT Affine"
-    plt.suptitle(f"Per-Pathology 6-Slice 2D CT Cross-Sectional Visualization | Scan: {scan_id} ({mode_str})", fontsize=14, fontweight='bold', y=0.99)
+    plt.suptitle(f"Per-Pathology 6-Slice 2D CT Cross-Sectional Visualization | Scan: {scan_id}", fontsize=14, fontweight='bold', y=0.99)
     plt.tight_layout(rect=[0, 0.04, 1, 0.96], w_pad=2.2, h_pad=3.0)
 
     scan_subfolder = out_dir / scan_id
     scan_subfolder.mkdir(parents=True, exist_ok=True)
-    suffix = "_fixed_affine" if fix_gt_affine else ""
-    out_path = scan_subfolder / f"pathology_row_scan_{scan_id}{suffix}.png"
+    out_path = scan_subfolder / f"pathology_row_scan_{scan_id}.png"
     plt.savefig(out_path, bbox_inches='tight', dpi=200)
     plt.close(fig)
 
@@ -501,11 +490,14 @@ def main():
     parser.add_argument("--scan_id", type=str, default=None, help="Specific scan ID or comma-separated IDs (e.g. train_19891_a_2,train_13098_a_2).")
     parser.add_argument("--pred_subdir", type=str, default="phase_2a_rule_based", help="Subdirectory name inside predictions directory (default: phase_2a_rule_based).")
     parser.add_argument("--num_scans", type=int, default=1, help="Number of random scans to plot if --scan_id is omitted.")
-    parser.add_argument("--fix_gt_affine", action="store_true", help="If set, overrides GT mask header affine with image affine before canonical reorientation.")
+    parser.add_argument("--no_fix_gt_affine", action="store_true", help="If set, disables automatic GT mask header affine repair with raw CT image DICOM affine.")
     parser.add_argument("--window_preset", type=str, default="auto", choices=["auto", "lung", "soft_tissue", "bone", "chest_default"], help="Contrast window preset for CT rendering (default: auto).")
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed for sampling.")
     parser.add_argument("--out_dir", type=str, default=str(VISUALIZATIONS_DIR), help="Directory to save generated PNG images (default: scan_visualizations/).")
     args = parser.parse_args()
+
+    # Default fix_gt_affine to True: repairs raw GT mask headers (np.eye(4)) using parent CT image DICOM affine
+    fix_gt_affine = not args.no_fix_gt_affine
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -544,7 +536,7 @@ def main():
         print(f"\n--- Processing Scan [{i}/{len(target_ids)}]: '{scan_id}' ---", flush=True)
         out_p = plot_single_scan_case(
             scan_id, meta_map, pred_dir, out_dir,
-            fix_gt_affine=args.fix_gt_affine,
+            fix_gt_affine=fix_gt_affine,
             window_preset=args.window_preset
         )
         saved_paths.append(out_p)

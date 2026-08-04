@@ -26,6 +26,7 @@ if str(ROOT_DIR) not in sys.path:
 from scripts.config import CATEGORY_MAP
 from nnunetv2.imageio.nibabel_reader_writer import NibabelIOWithReorient
 from scripts.common.prompt_normalizer import clean_finding_prompt
+from scripts.common.orientation import load_nifti_ras
 
 
 # Calibrated category threshold factors (p_c = factor * max_p).
@@ -59,7 +60,7 @@ class EmpiricalSpatialPDFBaseline:
     2. Computes empirical probability density P_c(z, y, x) = 1/N_c * sum(Mask_i).
     3. Resamples P_c to target validation scan shape and thresholds to generate 3D/4D predictions.
     """
-    CANONICAL_SHAPE = (192, 192, 192)
+    CANONICAL_SHAPE = (512, 512, 512)
 
     def __init__(self, pdf_cache_path: Path, dataset_json_path: Path, seg_raw_dir: Path, max_train_scans: int = 300, force_rebuild: bool = False):
         """
@@ -139,9 +140,14 @@ class EmpiricalSpatialPDFBaseline:
                 continue
 
             try:
-                gt_nii = nib.load(str(seg_path))
-                gt_nii_ras = nib.as_closest_canonical(gt_nii)
-                gt_data = np.asanyarray(gt_nii_ras.dataobj).astype(np.float32)
+                # Use centralized spatial engine which auto-repairs np.eye(4) identity bugs
+                gt_data, _, _ = load_nifti_ras(seg_path, ref_affine=None)
+                if gt_data.ndim == 4 and gt_data.shape[0] < np.min(gt_data.shape[1:4]):
+                    # It's already (F, X, Y, Z) from load_nifti_ras if it detected 4D
+                    pass
+                elif gt_data.ndim == 4 and gt_data.shape[-1] < np.min(gt_data.shape[:3]):
+                    # If it came back as (X, Y, Z, F), which shouldn't happen with our robust load_nifti_ras but just in case
+                    gt_data = np.moveaxis(gt_data, -1, 0)
             except Exception as e:
                 tqdm.write(f"[WARNING] Failed to load GT mask {seg_path}: {e}")
                 continue
@@ -164,17 +170,18 @@ class EmpiricalSpatialPDFBaseline:
                 if not binary_mask.any():
                     continue
 
-                # PyTorch 3D Interpolation to (192, 192, 192) in (X, Y, Z) space
-                mask_tensor = torch.from_numpy(binary_mask).unsqueeze(0).unsqueeze(0) # (1, 1, X, Y, Z)
+                # PyTorch 3D Interpolation to Canonical Shape in (X, Y, Z) space
+                # Move to GPU for massive speedup on 512-cubed volumes
+                mask_tensor = torch.from_numpy(binary_mask).unsqueeze(0).unsqueeze(0).cuda() # (1, 1, X, Y, Z)
                 if mask_tensor.shape[2:] != self.CANONICAL_SHAPE:
-                    mask_canonical = F.interpolate(mask_tensor, size=self.CANONICAL_SHAPE, mode='nearest').squeeze(0).squeeze(0).numpy()
+                    mask_canonical = F.interpolate(mask_tensor, size=self.CANONICAL_SHAPE, mode='nearest').squeeze(0).squeeze(0).cpu().numpy()
                 else:
-                    mask_canonical = binary_mask
+                    mask_canonical = mask_tensor.squeeze(0).squeeze(0).cpu().numpy()
 
                 accumulators[cat_code] += mask_canonical
                 category_counts[cat_code] += 1
 
-            del gt_nii, gt_data
+            del gt_data
             gc.collect()
 
         # Normalize accumulators

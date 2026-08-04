@@ -176,9 +176,9 @@ def test_save_nifti_4d_round_trip(tmp_path: Path):
 
     save_nifti(pred_4d, out_path, affine)
 
-    # Disk file check: nibabel should load on-disk shape as (20, 30, 40, 5)
+    # Disk file check: nibabel should load on-disk shape as (5, 20, 30, 40) matching challenge spec
     disk_nii = nib.load(str(out_path))
-    assert disk_nii.shape == (20, 30, 40, 5)
+    assert disk_nii.shape == (5, 20, 30, 40)
 
     # Centralized spatial engine check: load_nifti_ras should return (5, 20, 30, 40)
     reloaded_data, _, _ = load_nifti_ras(out_path)

@@ -173,7 +173,7 @@ def main():
         generated_count += 1
 
         # Explicit memory cleanup
-        del raw_nii, raw_nii_ras, finding_masks_xyz, pred_4d_fxyz, out_nii
+        del raw_img_ras, raw_nii_ras, finding_masks_xyz, pred_4d_fxyz
         gc.collect()
         try:
             ctypes.CDLL("libc.so.6").malloc_trim(0)

@@ -78,8 +78,8 @@ python scripts/analysis/analyze_predictions.py \
     --output_dir logs/phase_2a_rule_based/exp_001_seg_masks_priors/failure_snapshots
 ```
 
-#### 3D/2D Rotational Visualizer & Downloadable NIfTI ZIP Exporter
-Generate per-pathology multi-angle 3D rotational viewports, 2D CT slice overlays, and 3D-dimension-matched NIfTI bundles saved to `scan_visualizations/<scan_id>/`:
+#### 6-Slice 2D CT Cross-Sectional Visualizer & Downloadable NIfTI ZIP Exporter
+Generate per-pathology 6-slice 2D CT cross-sectional overlays (Max GT and Max Pred slices across Axial, Coronal, Sagittal planes) and 3D-dimension-matched NIfTI bundles saved to `scan_visualizations/<scan_id>/`:
 ```bash
 python scripts/analysis/plot_single_case.py --scan_id train_19891_a_2
 ```

@@ -1,10 +1,12 @@
 """
 ===============================================================================
-SCRIPT:         Shared 3D/2D Rotational Visualizer Engine
+SCRIPT:         Shared 6-Slice 2D Multi-Plane Cross-Sectional Visualizer Engine
 LOCATION:       scripts/analysis/plot_single_case.py
-OBJECTIVE:      Generates multi-angle 3D isometric surface renderings and 2D CT 
-                slice overlays per finding category for single CT scans. Exports 
-                high-contrast PNG figures and 3D NIfTI bundles to scan_visualizations/.
+OBJECTIVE:      Generates 6 high-contrast 2D CT slice overlays across 3 orthogonal 
+                planes (2 Axial, 2 Coronal, 2 Sagittal) per pathology finding category.
+                Selects the slice with the largest Ground Truth area and the slice 
+                with the largest Prediction area for each anatomical axis.
+                Exports high-contrast PNG figures and 3D NIfTI bundles to scan_visualizations/.
 USAGE:          python scripts/analysis/plot_single_case.py --scan_id train_19891_a_2
 ===============================================================================
 """
@@ -23,8 +25,6 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from skimage.measure import marching_cubes
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 # Add project root to sys.path
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -32,12 +32,61 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from scripts.config import RAW_IMAGES_DIR, RAW_MASKS_DIR, PREDICTIONS_DIR, DATASET_JSON, CATEGORY_MAP, SCRATCH_DIR, VISUALIZATIONS_DIR
+from scripts.common.orientation import load_nifti_ras, save_nifti
+
+WINDOW_PRESETS = {
+    'lung': (-1000.0, 200.0),
+    'soft_tissue': (-160.0, 240.0),
+    'bone': (-200.0, 1000.0),
+    'chest_default': (-1000.0, 400.0)
+}
+
+CATEGORY_WINDOW_MAP = {
+    '1a': 'lung', '1b': 'lung', '1c': 'lung', '1d': 'lung', '1e': 'lung', '1f': 'lung',
+    '2a': 'lung', '2b': 'lung', '2c': 'lung', '2f': 'lung', '2g': 'lung',
+    '2d': 'soft_tissue', '2e': 'soft_tissue', '2h': 'soft_tissue'
+}
+
+def resolve_contrast_window(cat_code: str, img_data: np.ndarray, user_preset: str = 'auto') -> tuple[float, float]:
+    """
+    resolve_contrast_window(cat_code: str, img_data: np.ndarray, user_preset: str = 'auto') -> tuple[float, float]
+    Resolves (vmin, vmax) intensity contrast window bounds for a CT volume based on category preset or user override.
+
+    Args:
+        cat_code (str): Pathology category code (e.g. '1a', '2e').
+        img_data (np.ndarray): 3D CT volume array.
+        user_preset (str): Specified window preset ('auto', 'lung', 'soft_tissue', 'bone', 'chest_default').
+
+    Returns:
+        tuple[float, float]: Resolved (vmin, vmax) bounds.
+    """
+    if user_preset != 'auto' and user_preset in WINDOW_PRESETS:
+        target_preset = user_preset
+    else:
+        target_preset = CATEGORY_WINDOW_MAP.get(cat_code, 'chest_default')
+
+    base_vmin, base_vmax = WINDOW_PRESETS[target_preset]
+
+    img_min, img_max = float(img_data.min()), float(img_data.max())
+    if img_min >= -1050.0 and img_max <= 3500.0 and img_min < -500.0:
+        return base_vmin, base_vmax
+    else:
+        p1 = float(np.percentile(img_data, 1.0))
+        p99 = float(np.percentile(img_data, 99.0))
+        if p99 > p1:
+            hu_range = 1400.0
+            vmin_ratio = (base_vmin + 1000.0) / hu_range
+            vmax_ratio = (base_vmax + 1000.0) / hu_range
+            vmin = p1 + vmin_ratio * (p99 - p1)
+            vmax = p1 + vmax_ratio * (p99 - p1)
+            return float(vmin), float(vmax)
+        else:
+            return img_min, img_max
 
 def load_canonical_ras(nifti_path: Path, override_affine: np.ndarray = None) -> np.ndarray:
     """
     load_canonical_ras(nifti_path: Path, override_affine: np.ndarray = None) -> np.ndarray
-    Loads a NIfTI file, optionally overrides its header affine matrix, reorients it to canonical RAS space,
-    and returns the 4D/3D float32 array.
+    Loads a NIfTI file in canonical RAS space using centralized spatial engine scripts.common.orientation.
 
     Args:
         nifti_path (Path): Path to target .nii.gz file.
@@ -46,22 +95,22 @@ def load_canonical_ras(nifti_path: Path, override_affine: np.ndarray = None) -> 
     Returns:
         np.ndarray: Reoriented RAS data array with 4D shape (channels, X, Y, Z).
     """
-    nii = nib.load(str(nifti_path))
     if override_affine is not None:
-        nii = nib.Nifti1Image(nii.get_fdata(), override_affine)
-        
-    nii_ras = nib.as_closest_canonical(nii)
-    data = np.asanyarray(nii_ras.dataobj).astype(np.float32)
-
-    if data.ndim == 3:
-        data_ras = np.expand_dims(data, axis=0)
-    elif data.ndim == 4:
-        if data.shape[-1] < np.min(data.shape[:3]):
-            data_ras = np.moveaxis(data, -1, 0)
-        else:
-            data_ras = data
-            
-    return data_ras
+        nii = nib.load(str(nifti_path))
+        nii_override = nib.Nifti1Image(nii.get_fdata(), override_affine)
+        nii_ras = nib.as_closest_canonical(nii_override)
+        data_ras = nii_ras.get_fdata(dtype=np.float32)
+        if data_ras.ndim == 3:
+            data_ras = np.expand_dims(data_ras, axis=0)
+        elif data_ras.ndim == 4:
+            if data_ras.shape[-1] < np.min(data_ras.shape[:3]) or data_ras.shape[-1] <= 64:
+                data_ras = np.moveaxis(data_ras, -1, 0)
+        return data_ras
+    else:
+        data_ras, _, _ = load_nifti_ras(nifti_path)
+        if data_ras.ndim == 3:
+            data_ras = np.expand_dims(data_ras, axis=0)
+        return data_ras
 
 def load_dataset_metadata() -> dict:
     """
@@ -145,46 +194,23 @@ def create_scan_zip_bundle(scan_id: str, img_path: Path, gt_path: Path, pred_pat
     img_affine = img_nii.affine if img_nii is not None else None
 
     def _convert_4d_to_3d_nii(nii_path: Path, base_affine: np.ndarray):
-        """
-        _convert_4d_to_3d_nii(nii_path: Path, base_affine: np.ndarray) -> tuple[nib.Nifti1Image | None, dict, np.ndarray | None]
-        Loads a 4D/3D NIfTI file, collapses 4D channels into a single 3D multi-label mask,
-        and extracts per-finding 3D binary masks.
-
-        Args:
-            nii_path (Path): Target NIfTI file path.
-            base_affine (np.ndarray): Base image 4x4 affine matrix for coordinate alignment.
-
-        Returns:
-            tuple: (combined_3d_nii, per_finding_3d_dict, affine_matrix)
-        """
         if not nii_path.exists():
             return None, {}, None
-        nii = nib.load(str(nii_path))
-        data = np.asanyarray(nii.dataobj)
-        affine = base_affine if base_affine is not None else nii.affine
+        data, nii_ras, _ = load_nifti_ras(nii_path)
+        affine = base_affine if base_affine is not None else nii_ras.affine
         
         if data.ndim == 3:
             combined_3d = (data > 0).astype(np.uint8)
             per_finding_3d = {1: combined_3d}
         elif data.ndim == 4:
-            if data.shape[0] < np.min(data.shape[1:]):
-                num_f = data.shape[0]
-                shape_3d = data.shape[1:]
-                combined_3d = np.zeros(shape_3d, dtype=np.uint8)
-                per_finding_3d = {}
-                for i in range(num_f):
-                    f_mask = (data[i] > 0).astype(np.uint8)
-                    combined_3d[f_mask > 0] = i + 1
-                    per_finding_3d[i + 1] = f_mask
-            else:
-                num_f = data.shape[-1]
-                shape_3d = data.shape[:3]
-                combined_3d = np.zeros(shape_3d, dtype=np.uint8)
-                per_finding_3d = {}
-                for i in range(num_f):
-                    f_mask = (data[..., i] > 0).astype(np.uint8)
-                    combined_3d[f_mask > 0] = i + 1
-                    per_finding_3d[i + 1] = f_mask
+            num_f = data.shape[0]
+            shape_3d = data.shape[1:]
+            combined_3d = np.zeros(shape_3d, dtype=np.uint8)
+            per_finding_3d = {}
+            for i in range(num_f):
+                f_mask = (data[i] > 0).astype(np.uint8)
+                combined_3d[f_mask > 0] = i + 1
+                per_finding_3d[i + 1] = f_mask
         else:
             return None, {}, None
 
@@ -194,11 +220,9 @@ def create_scan_zip_bundle(scan_id: str, img_path: Path, gt_path: Path, pred_pat
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
         with zipfile.ZipFile(zip_out_path, 'w', compression=zipfile.ZIP_STORED) as zipf:
-            # 1. Add main 3D CT volume
             if img_path.exists():
                 zipf.write(img_path, arcname=f"{scan_id}.nii.gz")
 
-            # 2. Add 3D-dimension-matched GT masks
             gt_3d_nii, gt_findings, affine_gt = _convert_4d_to_3d_nii(gt_path, img_affine)
             if gt_3d_nii is not None:
                 gt_3d_file = tmp_path / f"{scan_id}_gt.nii.gz"
@@ -212,7 +236,6 @@ def create_scan_zip_bundle(scan_id: str, img_path: Path, gt_path: Path, pred_pat
                         nib.save(f_nii, str(f_file))
                         zipf.write(f_file, arcname=f"{scan_id}_gt_finding_{f_idx}.nii.gz")
 
-            # 3. Add 3D-dimension-matched Pred masks
             pred_3d_nii, pred_findings, affine_pred = _convert_4d_to_3d_nii(pred_path, img_affine)
             if pred_3d_nii is not None:
                 pred_3d_file = tmp_path / f"{scan_id}_pred.nii.gz"
@@ -226,7 +249,6 @@ def create_scan_zip_bundle(scan_id: str, img_path: Path, gt_path: Path, pred_pat
                         nib.save(f_nii, str(f_file))
                         zipf.write(f_file, arcname=f"{scan_id}_pred_finding_{f_idx}.nii.gz")
 
-            # 4. Include raw 4D masks for reference
             if gt_path.exists():
                 zipf.write(gt_path, arcname=f"{scan_id}_gt_4d.nii.gz")
             if pred_path.exists():
@@ -234,12 +256,66 @@ def create_scan_zip_bundle(scan_id: str, img_path: Path, gt_path: Path, pred_pat
 
     return zip_out_path
 
-def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, fix_gt_affine: bool = False, render_body: bool = True, body_alpha: float = 0.08, body_step_size: int = 4) -> Path:
+def select_gt_and_pred_max_slices(gt_mask: np.ndarray, pred_mask: np.ndarray, axis: int) -> tuple[int, int, str, str]:
     """
-    plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, fix_gt_affine: bool = False, render_body: bool = True, body_alpha: float = 0.08, body_step_size: int = 4) -> Path
-    Generates a per-pathology multi-row visualization figure for a CT scan volume.
-    Each active pathology gets its own dedicated row featuring 4 high-contrast 3D rotational viewports (with semi-transparent CT torso contour),
-    3 2D slice overlays (Axial, Coronal, Sagittal through pathology centroid), and 1 pathology statistics card including clinical text.
+    select_gt_and_pred_max_slices(gt_mask: np.ndarray, pred_mask: np.ndarray, axis: int) -> tuple[int, int, str, str]
+    Selects the slice index with the largest Ground Truth area and the slice index with the
+    largest Prediction area along a specified volume axis (0=X/Sagittal, 1=Y/Coronal, 2=Z/Axial).
+
+    Args:
+        gt_mask (np.ndarray): 3D boolean Ground Truth mask array.
+        pred_mask (np.ndarray): 3D boolean Prediction mask array.
+        axis (int): Target volume axis (0=X, 1=Y, 2=Z).
+
+    Returns:
+        tuple[int, int, str, str]: (slice_gt_idx, slice_pred_idx, label_gt, label_pred)
+    """
+    max_len = gt_mask.shape[axis]
+    sum_axes = tuple(i for i in range(3) if i != axis)
+
+    gt_counts = gt_mask.sum(axis=sum_axes)     # 1D GT voxel counts per slice
+    pred_counts = pred_mask.sum(axis=sum_axes) # 1D Pred voxel counts per slice
+
+    # Determine Max GT Slice
+    gt_indices = np.where(gt_counts > 0)[0]
+    if len(gt_indices) > 0:
+        s_gt = int(gt_indices[np.argmax(gt_counts[gt_indices])])
+        label_gt = "Max GT"
+    else:
+        s_gt = max_len // 2
+        label_gt = "Center"
+
+    # Determine Max Pred Slice
+    pred_indices = np.where(pred_counts > 0)[0]
+    if len(pred_indices) > 0:
+        s_pred = int(pred_indices[np.argmax(pred_counts[pred_indices])])
+        label_pred = "Max Pred"
+    else:
+        s_pred = max_len // 2
+        label_pred = "Center"
+
+    # Handle overlapping slice indices to ensure 2 distinct informative slice views
+    if s_gt == s_pred:
+        if len(pred_indices) > 1:
+            sorted_pred = pred_indices[np.argsort(pred_counts[pred_indices])]
+            s_pred = int(sorted_pred[-2])
+            label_pred = "2nd Pred"
+        elif len(gt_indices) > 1:
+            sorted_gt = gt_indices[np.argsort(gt_counts[gt_indices])]
+            s_pred = int(sorted_gt[-2])
+            label_pred = "2nd GT"
+        else:
+            s_pred = min(max_len - 1, s_gt + 1) if s_gt < max_len - 1 else max(0, s_gt - 1)
+            label_pred = "Adjacent"
+
+    return s_gt, s_pred, label_gt, label_pred
+
+def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, fix_gt_affine: bool = False, window_preset: str = 'auto') -> Path:
+    """
+    plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, fix_gt_affine: bool = False, window_preset: str = 'auto') -> Path
+    Generates a per-pathology multi-row 2D cross-sectional visualization figure for a CT scan volume.
+    Each active pathology gets its own row featuring 6 2D CT slice overlays across 3 orthogonal planes
+    (Max GT and Max Pred slice per plane for Axial, Coronal, Sagittal) + 1 Pathology Statistics & Prompt Card.
 
     Args:
         scan_id (str): Target CT scan identifier.
@@ -247,9 +323,7 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
         pred_dir (Path): Predictions directory.
         out_dir (Path): Output directory for saved PNG images.
         fix_gt_affine (bool): If True, overrides GT mask header affine with raw image affine before canonical reorientation.
-        render_body (bool): If True, precomputes and renders a semi-transparent thoracic body contour in 3D.
-        body_alpha (float): Opacity value for the 3D thoracic body mesh (default: 0.08).
-        body_step_size (int): Marching cubes step size for background body mesh decimation (default: 4).
+        window_preset (str): Specified contrast window preset ('auto', 'lung', 'soft_tissue', 'bone', 'chest_default').
 
     Returns:
         Path: Path to saved output image file.
@@ -258,10 +332,21 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
     gt_path = RAW_MASKS_DIR / f"{scan_id}.nii.gz"
     pred_path = pred_dir / f"{scan_id}.nii.gz"
 
-    img_nii = nib.load(str(img_path))
-    img_affine = img_nii.affine
+    img_4d, img_nii_ras, _ = load_nifti_ras(img_path)
+    if img_4d.ndim == 3:
+        img_4d = np.expand_dims(img_4d, axis=0)
+    img_affine = img_nii_ras.affine
 
-    img_4d = load_canonical_ras(img_path)
+    # Extract physical voxel spacing (zooms) for true anatomical millimeter proportions
+    raw_zooms = img_nii_ras.header.get_zooms()[:3]
+    dx = float(raw_zooms[0]) if len(raw_zooms) > 0 and float(raw_zooms[0]) > 0 else 1.0
+    dy = float(raw_zooms[1]) if len(raw_zooms) > 1 and float(raw_zooms[1]) > 0 else 1.0
+    dz = float(raw_zooms[2]) if len(raw_zooms) > 2 and float(raw_zooms[2]) > 0 else 1.0
+
+    aspect_axial = dy / dx
+    aspect_coronal = dz / dx
+    aspect_sagittal = dz / dy
+
     gt_4d = load_canonical_ras(gt_path, override_affine=img_affine if fix_gt_affine else None)
     pred_4d = load_canonical_ras(pred_path)
 
@@ -300,105 +385,38 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
         active_indices = list(range(num_findings))
 
     nx, ny, nz = img_data.shape
-
-    # Pre-compute semi-transparent 3D thoracic body contour isosurface mesh from CT volume
-    body_mesh_verts = None
-    body_mesh_faces = None
-    if render_body:
-        try:
-            # Downsample CT volume by 4x (64x voxel reduction) for instant Matplotlib 3D rendering
-            img_sub = img_data[::4, ::4, ::4]
-            non_bg = img_sub[img_sub > 100]
-            body_level = float(np.percentile(non_bg, 10)) if len(non_bg) > 0 else 500.0
-            
-            body_verts, body_faces, _, _ = marching_cubes(img_sub, level=body_level, step_size=body_step_size)
-            body_mesh_verts = body_verts * 4.0  # Scale back to full volume coordinates
-            body_mesh_faces = body_faces
-        except Exception as e:
-            print(f"[WARNING] Body isosurface generation failed for {scan_id}: {e}", flush=True)
-
     num_rows = len(active_indices)
-    fig = plt.figure(figsize=(25, 5.2 * num_rows), dpi=200)
-
-    # 4 distinct rotational 3D perspective angles around the volume
-    views_3d = [
-        (25, 45, "3D ISO (Ant-Right)"),
-        (25, 135, "3D ISO (Ant-Left)"),
-        (25, 225, "3D ISO (Post-Left)"),
-        (25, 315, "3D ISO (Post-Right)")
-    ]
-
-    vmin, vmax = -1000.0, 400.0
+    fig = plt.figure(figsize=(27, 4.5 * num_rows), dpi=200)
 
     for row_idx, f_idx in enumerate(active_indices):
         f_item = findings_stats[f_idx]
         gt_mask = f_item['gt_mask']
         pred_mask = f_item['pred_mask']
 
-        # Determine pathology centroid for 2D slice positioning
-        if gt_mask.sum() > 0:
-            x_idx, y_idx, z_idx = np.where(gt_mask)
-            x_mid, y_mid, z_mid = int(np.median(x_idx)), int(np.median(y_idx)), int(np.median(z_idx))
-        elif pred_mask.sum() > 0:
-            x_idx, y_idx, z_idx = np.where(pred_mask)
-            x_mid, y_mid, z_mid = int(np.median(x_idx)), int(np.median(y_idx)), int(np.median(z_idx))
-        else:
-            x_mid, y_mid, z_mid = nx // 2, ny // 2, nz // 2
+        # Resolve category-specific or user-overridden contrast window
+        row_vmin, row_vmax = resolve_contrast_window(f_item['cat_code'], img_data, user_preset=window_preset)
 
-        # Pre-compute 3D GT and Pred meshes ONCE per pathology (4x rendering speedup)
-        gt_verts, gt_faces = None, None
-        if gt_mask.sum() > 30:
-            try:
-                v, f, _, _ = marching_cubes(gt_mask.astype(np.float32), level=0.5, step_size=2)
-                gt_verts, gt_faces = v, f
-            except Exception:
-                pass
+        # Select Max GT and Max Pred slice for each axis
+        z_gt, z_pred, lbl_z_gt, lbl_z_pred = select_gt_and_pred_max_slices(gt_mask, pred_mask, axis=2) # Axial (Z)
+        y_gt, y_pred, lbl_y_gt, lbl_y_pred = select_gt_and_pred_max_slices(gt_mask, pred_mask, axis=1) # Coronal (Y)
+        x_gt, x_pred, lbl_x_gt, lbl_x_pred = select_gt_and_pred_max_slices(gt_mask, pred_mask, axis=0) # Sagittal (X)
 
-        pred_verts, pred_faces = None, None
-        if pred_mask.sum() > 30:
-            try:
-                vp, fp, _, _ = marching_cubes(pred_mask.astype(np.float32), level=0.5, step_size=2)
-                pred_verts, pred_faces = vp, fp
-            except Exception:
-                pass
+        slices_config = [
+            # (panel_idx, ct_slice, gt_s, pred_s, title, aspect)
+            (1, img_data[:, :, z_gt].T, gt_mask[:, :, z_gt].T, pred_mask[:, :, z_gt].T, f"Axial [{lbl_z_gt}] (Z={z_gt})", aspect_axial),
+            (2, img_data[:, :, z_pred].T, gt_mask[:, :, z_pred].T, pred_mask[:, :, z_pred].T, f"Axial [{lbl_z_pred}] (Z={z_pred})", aspect_axial),
+            (3, img_data[:, y_gt, :].T, gt_mask[:, y_gt, :].T, pred_mask[:, y_gt, :].T, f"Coronal [{lbl_y_gt}] (Y={y_gt})", aspect_coronal),
+            (4, img_data[:, y_pred, :].T, gt_mask[:, y_pred, :].T, pred_mask[:, y_pred, :].T, f"Coronal [{lbl_y_pred}] (Y={y_pred})", aspect_coronal),
+            (5, img_data[x_gt, ::-1, :].T, gt_mask[x_gt, ::-1, :].T, pred_mask[x_gt, ::-1, :].T, f"Sagittal [{lbl_x_gt}] (X={x_gt})", aspect_sagittal),
+            (6, img_data[x_pred, ::-1, :].T, gt_mask[x_pred, ::-1, :].T, pred_mask[x_pred, ::-1, :].T, f"Sagittal [{lbl_x_pred}] (X={x_pred})", aspect_sagittal),
+        ]
 
-        base_sub = row_idx * 8
+        base_sub = row_idx * 7
 
-        # Panels 1-4: 4 Rotational 3D Viewports for this specific pathology
-        for v_idx, (elev, azim, v_title) in enumerate(views_3d):
-            ax_3d = fig.add_subplot(num_rows, 8, base_sub + v_idx + 1, projection='3d')
-            
-            # Pure white 3D background panes with contrasting slategray CT torso volume
-            ax_3d.set_facecolor('white')
-            ax_3d.xaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
-            ax_3d.yaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
-            ax_3d.zaxis.set_pane_color((1.0, 1.0, 1.0, 1.0))
-
-            # 1. Render high-contrast thoracic body contour mesh (slategray against white panes)
-            if body_mesh_verts is not None and body_mesh_faces is not None:
-                mesh_body = Poly3DCollection(body_mesh_verts[body_mesh_faces], facecolors='slategray', edgecolors='none', alpha=body_alpha)
-                ax_3d.add_collection3d(mesh_body)
-
-            # 2. Render GT mask (lime green)
-            if gt_verts is not None and gt_faces is not None:
-                mesh_gt = Poly3DCollection(gt_verts[gt_faces], facecolors='lime', edgecolors='none', alpha=0.65)
-                ax_3d.add_collection3d(mesh_gt)
-
-            # 3. Render Pred mask (crimson red)
-            if pred_verts is not None and pred_faces is not None:
-                mesh_p = Poly3DCollection(pred_verts[pred_faces], facecolors='crimson', edgecolors='none', alpha=0.55)
-                ax_3d.add_collection3d(mesh_p)
-
-            ax_3d.set_xlim(0, nx); ax_3d.set_ylim(0, ny); ax_3d.set_zlim(0, nz)
-            ax_3d.set_xlabel('X (RL)', fontsize=7); ax_3d.set_ylabel('Y (AP)', fontsize=7); ax_3d.set_zlabel('Z (IS)', fontsize=7)
-            ax_3d.view_init(elev=elev, azim=azim)
-            if row_idx == 0:
-                ax_3d.set_title(v_title, fontsize=10, fontweight='bold')
-
-        # Helper to plot 2D slice overlay for single pathology
-        def plot_2d_pathology_slice(ax, ct_slice, gt_s, pred_s, title_str):
-            ct_norm = np.clip(ct_slice, vmin, vmax)
-            ct_norm = (ct_norm - vmin) / (vmax - vmin)
+        # Helper to plot 2D slice overlay
+        def plot_2d_pathology_slice(ax, ct_slice, gt_s, pred_s, title_str, aspect='auto'):
+            ct_norm = np.clip(ct_slice, row_vmin, row_vmax)
+            ct_norm = (ct_norm - row_vmin) / (row_vmax - row_vmin)
 
             gt_overlay = np.zeros((*ct_norm.shape, 4), dtype=np.float32)
             gt_overlay[..., 1] = 1.0 # Lime Green
@@ -411,26 +429,19 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
             gt_overlay = np.clip(gt_overlay, 0.0, 1.0)
             pred_overlay = np.clip(pred_overlay, 0.0, 1.0)
 
-            ax.imshow(ct_norm, cmap='gray', origin='lower')
-            ax.imshow(gt_overlay, origin='lower')
-            ax.imshow(pred_overlay, origin='lower')
-            ax.set_title(title_str, fontsize=9, fontweight='bold')
+            ax.imshow(ct_norm, cmap='gray', origin='lower', aspect=aspect)
+            ax.imshow(gt_overlay, origin='lower', aspect=aspect)
+            ax.imshow(pred_overlay, origin='lower', aspect=aspect)
+            ax.set_title(title_str, fontsize=9.5, fontweight='bold')
             ax.axis('off')
 
-        # Panel 5: Axial Slice
-        ax_ax = fig.add_subplot(num_rows, 8, base_sub + 5)
-        plot_2d_pathology_slice(ax_ax, img_data[:, :, z_mid].T, gt_mask[:, :, z_mid].T, pred_mask[:, :, z_mid].T, f"Axial (Z={z_mid})")
+        # Plot 6 Slices
+        for col_idx, ct_s, gt_s, pred_s, title_str, aspect_val in slices_config:
+            ax = fig.add_subplot(num_rows, 7, base_sub + col_idx)
+            plot_2d_pathology_slice(ax, ct_s, gt_s, pred_s, title_str, aspect=aspect_val)
 
-        # Panel 6: Coronal Slice
-        ax_cor = fig.add_subplot(num_rows, 8, base_sub + 6)
-        plot_2d_pathology_slice(ax_cor, img_data[:, y_mid, :].T, gt_mask[:, y_mid, :].T, pred_mask[:, y_mid, :].T, f"Coronal (Y={y_mid})")
-
-        # Panel 7: Sagittal Slice
-        ax_sag = fig.add_subplot(num_rows, 8, base_sub + 7)
-        plot_2d_pathology_slice(ax_sag, img_data[x_mid, :, :].T, gt_mask[x_mid, :, :].T, pred_mask[x_mid, :, :].T, f"Sagittal (X={x_mid})")
-
-        # Panel 8: Finding Statistics & Prompt Card
-        ax_stats = fig.add_subplot(num_rows, 8, base_sub + 8)
+        # Panel 7: Finding Statistics & Prompt Card
+        ax_stats = fig.add_subplot(num_rows, 7, base_sub + 7)
         ax_stats.axis('off')
         if row_idx == 0:
             ax_stats.set_title("Pathology & Text Prompt", fontsize=10, fontweight='bold')
@@ -438,7 +449,7 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
         box_color = 'lightgreen' if f_item['dice'] >= 0.1 else ('salmon' if f_item['gt_voxels'] > 0 else 'lightgray')
         
         prompt_str = f_item['prompt'] if f_item['prompt'] else "No prompt text provided."
-        prompt_wrapped = textwrap.fill(prompt_str, width=32)
+        prompt_wrapped = textwrap.fill(prompt_str, width=28)
 
         card_text = (
             f"Finding {f_idx} [{f_item['cat_code']}]\n"
@@ -460,12 +471,11 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
     # Add Legend at bottom
     green_patch = mpatches.Patch(color='lime', alpha=0.7, label='Ground Truth Mask')
     red_patch = mpatches.Patch(color='crimson', alpha=0.7, label='Prediction Mask')
-    gray_patch = mpatches.Patch(color='gray', alpha=0.5, label=f'CT Torso Volume Contour (Alpha={body_alpha})')
-    fig.legend(handles=[green_patch, red_patch, gray_patch], loc='lower center', ncol=3, frameon=True, fontsize=10)
+    fig.legend(handles=[green_patch, red_patch], loc='lower center', ncol=2, frameon=True, fontsize=10)
 
     mode_str = "Fixed GT Affine" if fix_gt_affine else "Raw GT Affine"
-    plt.suptitle(f"Per-Pathology 3D Rotational & 2D CT Visualization | Scan: {scan_id} ({mode_str})", fontsize=14, fontweight='bold', y=0.99)
-    plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+    plt.suptitle(f"Per-Pathology 6-Slice 2D CT Cross-Sectional Visualization | Scan: {scan_id} ({mode_str})", fontsize=14, fontweight='bold', y=0.99)
+    plt.tight_layout(rect=[0, 0.04, 1, 0.96], w_pad=2.2, h_pad=3.0)
 
     scan_subfolder = out_dir / scan_id
     scan_subfolder.mkdir(parents=True, exist_ok=True)
@@ -484,17 +494,15 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
 def main():
     """
     main() -> None
-    CLI entry point to generate per-pathology multi-row 3D isosurface mesh and 2D slice visualizers
+    CLI entry point to generate 6-slice 2D cross-sectional visualizer figures
     for one or multiple CT scan volumes.
     """
-    parser = argparse.ArgumentParser(description="Per-Pathology Multi-Row CT Visualization Generator")
+    parser = argparse.ArgumentParser(description="Per-Pathology 6-Slice 2D Cross-Sectional CT Visualizer Generator")
     parser.add_argument("--scan_id", type=str, default=None, help="Specific scan ID or comma-separated IDs (e.g. train_19891_a_2,train_13098_a_2).")
     parser.add_argument("--pred_subdir", type=str, default="phase_2a_rule_based", help="Subdirectory name inside predictions directory (default: phase_2a_rule_based).")
     parser.add_argument("--num_scans", type=int, default=1, help="Number of random scans to plot if --scan_id is omitted.")
     parser.add_argument("--fix_gt_affine", action="store_true", help="If set, overrides GT mask header affine with image affine before canonical reorientation.")
-    parser.add_argument("--no_render_body", action="store_true", help="If set, disables rendering of the semi-transparent 3D thoracic body contour.")
-    parser.add_argument("--body_alpha", type=float, default=0.08, help="Opacity value for the 3D thoracic body contour mesh (default: 0.08).")
-    parser.add_argument("--body_step_size", type=int, default=4, help="Step size for marching cubes body isosurface decimation (default: 4).")
+    parser.add_argument("--window_preset", type=str, default="auto", choices=["auto", "lung", "soft_tissue", "bone", "chest_default"], help="Contrast window preset for CT rendering (default: auto).")
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed for sampling.")
     parser.add_argument("--out_dir", type=str, default=str(VISUALIZATIONS_DIR), help="Directory to save generated PNG images (default: scan_visualizations/).")
     args = parser.parse_args()
@@ -537,9 +545,7 @@ def main():
         out_p = plot_single_scan_case(
             scan_id, meta_map, pred_dir, out_dir,
             fix_gt_affine=args.fix_gt_affine,
-            render_body=not args.no_render_body,
-            body_alpha=args.body_alpha,
-            body_step_size=args.body_step_size
+            window_preset=args.window_preset
         )
         saved_paths.append(out_p)
 

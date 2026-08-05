@@ -159,10 +159,10 @@ def main():
         if not prompts:
             continue
 
-        # 3. Generate 3D mask per finding prompt in (X, Y, Z) space
+        # 3. Generate 3D mask per category code in (X, Y, Z) space
         finding_masks_xyz = []
-        for prompt, cat_code in zip(prompts, category_codes):
-            mask_3d = predictor.generate_prediction_mask(target_shape_xyz, prompt, cat_code=cat_code) # shape: (X, Y, Z)
+        for cat_code in category_codes:
+            mask_3d = predictor.generate_prediction_mask(target_shape_xyz, cat_code=cat_code) # shape: (X, Y, Z)
             finding_masks_xyz.append(mask_3d)
 
         # Stack to 4D array (F, X, Y, Z)

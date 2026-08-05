@@ -25,7 +25,6 @@ if str(ROOT_DIR) not in sys.path:
 
 from scripts.config import CATEGORY_MAP
 from nnunetv2.imageio.nibabel_reader_writer import NibabelIOWithReorient
-from scripts.common.prompt_normalizer import clean_finding_prompt
 from scripts.common.orientation import load_nifti_ras
 
 
@@ -222,61 +221,10 @@ class EmpiricalSpatialPDFBaseline:
             spatial_pdfs = {code: data[code] for code in CATEGORY_MAP.keys() if code in data}
         return spatial_pdfs
 
-    def match_category_code(self, prompt_text: str) -> str:
+    def generate_prediction_mask(self, target_shape_ras: tuple, cat_code: str = "2h") -> np.ndarray:
         """
         Signature:
-            match_category_code(prompt_text: str) -> str
-
-        Objective:
-            Match raw radiology report finding text to its corresponding 14-category code string ('1a'..'2h').
-
-        Inputs:
-            prompt_text (str): Free-text radiology report finding description.
-
-        Outputs:
-            str: 14-category code string ('1a'..'2h'). Defaults to '2h' if unmatched.
-        """
-        cleaned_text = clean_finding_prompt(prompt_text).lower()
-        for code, cat_name in CATEGORY_MAP.items():
-            if cat_name.lower() in cleaned_text:
-                return code
-
-        # Specific keyword heuristics handling singular/plural & common variations
-        if "linear" in cleaned_text or "band" in cleaned_text or "scar" in cleaned_text or "fibrotic band" in cleaned_text:
-            return "2a"
-        elif "atelectasis" in cleaned_text or "consolidation" in cleaned_text or "collapse" in cleaned_text:
-            return "2b"
-        elif "ground-glass" in cleaned_text or "ground glass" in cleaned_text or "ggo" in cleaned_text:
-            return "2c"
-        elif "nodule" in cleaned_text or "mass" in cleaned_text or "lesion" in cleaned_text:
-            return "2d"
-        elif "effusion" in cleaned_text or "pleural fluid" in cleaned_text or "pleural thickening" in cleaned_text:
-            return "2e"
-        elif "honeycomb" in cleaned_text:
-            return "2f"
-        elif "pneumothorax" in cleaned_text:
-            return "2g"
-        elif "bronchial wall" in cleaned_text or "peribronchial" in cleaned_text:
-            return "1a"
-        elif "bronchiectasis" in cleaned_text or "bronchiectatic" in cleaned_text:
-            return "1b"
-        elif "emphysema" in cleaned_text or "emphysematous" in cleaned_text or "bullous" in cleaned_text:
-            return "1c"
-        elif "septal" in cleaned_text or "interstitial thickening" in cleaned_text or "reticulation" in cleaned_text:
-            return "1d"
-        elif "micronodule" in cleaned_text or "centrilobular nodule" in cleaned_text or "tree-in-bud" in cleaned_text:
-            return "1e"
-        elif "thickening" in cleaned_text:
-            return "1d"
-        elif "opacity" in cleaned_text:
-            return "2c"
-            
-        return "2h"
-
-    def generate_prediction_mask(self, target_shape_ras: tuple, prompt_text: str = "", cat_code: str = None) -> np.ndarray:
-        """
-        Signature:
-            generate_prediction_mask(target_shape_ras: tuple, prompt_text: str, cat_code: str) -> np.ndarray
+            generate_prediction_mask(target_shape_ras: tuple, cat_code: str) -> np.ndarray
 
         Objective:
             Resample category 3D empirical PDF heatmap P_c to target scan's RAS shape, apply
@@ -284,17 +232,12 @@ class EmpiricalSpatialPDFBaseline:
 
         Inputs:
             target_shape_ras (tuple): Target 3D volume shape (Z, Y, X) in canonical RAS space.
-            prompt_text (str): Free-text radiology report finding prompt.
-            cat_code (str): Explicit 14-category code string ('1a'..'2h'). If provided, overrides prompt matching.
+            cat_code (str): Explicit 14-category code string ('1a'..'2h'). Defaults to '2h'.
 
         Outputs:
             np.ndarray: 3D uint8 binary prediction mask array with shape matching target_shape_ras.
         """
-        if cat_code is not None and str(cat_code) in CATEGORY_MAP:
-            code = str(cat_code)
-        else:
-            code = self.match_category_code(prompt_text)
-
+        code = str(cat_code) if str(cat_code) in CATEGORY_MAP else "2h"
         pdf_np = self.spatial_pdfs.get(code, np.full(self.CANONICAL_SHAPE, 0.01, dtype=np.float32))
 
         # PyTorch 3D Interpolation to target RAS shape

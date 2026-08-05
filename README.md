@@ -4,8 +4,8 @@ Dedicated research workspace for **Phase 2 Baseline Audits & Phase 3 Model Fine-
 
 > [!IMPORTANT]
 > **Repository Scope & Governance**:
-> This repository is dedicated exclusively to **VoxTell Zero-Shot Baseline Audit, Continuous Logit Probability Thresholding, MONAI Patch Dataloading, PyTorch Mean Teacher Fine-Tuning, Positive-Unlabeled (PU) SPOCO Loss Adaptations, and Test Submission Generation**.
-> Data profiling and spatial prior generation are handled separately in `rexgroundingct-data-profiling`.
+> This repository is dedicated exclusively to **Phase 2 Non-Neural & VoxTell Baselines, Continuous Logit Probability Thresholding, MONAI Patch Dataloading, PyTorch Mean Teacher Fine-Tuning, Positive-Unlabeled (PU) SPOCO Loss Adaptations, and Test Submission Generation**.
+> Phase 1 exploratory data profiling is handled in sibling workspace `rexgroundingct-data-profiling`.
 
 ---
 
@@ -21,7 +21,8 @@ rexgroundingct-model-training/
 │   └── phase_3_training/       # Phase 3 Mean Teacher fine-tuning logs
 ├── scratch/                    # Fine-tuning scratch scripts & temporary evaluation tools
 ├── scripts/                    # Core inference, training, & dataloading pipeline
-│   ├── common/                 # Spatial engine (orientation.py), evaluators, & visualizers
+│   ├── analysis/               # Diagnostic profilers (analyze_predictions.py) & visualizers (plot_single_case.py)
+│   ├── common/                 # Spatial engine (orientation.py) & evaluator (evaluate.py)
 │   ├── phase_2a_rule_based/    # Phase 2A non-neural statistical baseline pipeline
 │   ├── phase_2b_voxtell/       # Phase 2B VoxTell zero-shot baseline audit pipeline
 │   └── phase_3_training/       # Phase 3 PyTorch semi-supervised fine-tuning pipeline

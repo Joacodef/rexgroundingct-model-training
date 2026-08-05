@@ -48,7 +48,6 @@ from scripts.config import (
     RAW_IMAGES_DIR, RAW_MASKS_DIR, PREDICTIONS_DIR, 
     DATASET_JSON, LOGS_DIR, CATEGORY_MAP
 )
-from scripts.common.prompt_normalizer import clean_finding_prompt
 from scripts.common.orientation import load_nifti_ras
 
 
@@ -356,7 +355,7 @@ def match_prompt_category(prompt_text: str) -> str:
     Outputs:
         str: 14-category code string ('1a'..'2h'). Defaults to '2h' (Other focal) if unmatched.
     """
-    cleaned = clean_finding_prompt(prompt_text).lower()
+    cleaned = prompt_text.lower().strip()
     for code, cat_name in CATEGORY_MAP.items():
         if cat_name.lower() in cleaned:
             return code

@@ -49,10 +49,23 @@ from scripts.config import (
     DATASET_JSON, LOGS_DIR, CATEGORY_MAP
 )
 from scripts.common.prompt_normalizer import clean_finding_prompt
+from scripts.common.orientation import load_nifti_ras
 
 
-def parse_args():
-    """Parse command-line arguments for 3D/4D segmentation mask profiling and qualitative failure snapshot rendering."""
+def parse_args() -> argparse.Namespace:
+    """
+    Signature:
+        parse_args() -> argparse.Namespace
+
+    Objective:
+        Parse command-line arguments for 3D/4D segmentation mask profiling and qualitative failure snapshot rendering.
+
+    Inputs:
+        None
+
+    Outputs:
+        argparse.Namespace: Parsed CLI argument namespace.
+    """
     parser = argparse.ArgumentParser(
         description="Unified 3D/4D Segmentation Mask Diagnostic Profiler & Qualitative Failure Snapshot Generator"
     )
@@ -436,13 +449,12 @@ def main():
             continue
 
         try:
-            gt_nii = nib.load(str(gt_path))
-            pred_nii = nib.load(str(pred_path))
+            gt_data, gt_nii, _ = load_nifti_ras(gt_path)
+            pred_data, pred_nii, _ = load_nifti_ras(pred_path)
 
             spacing_mm = tuple(float(x) for x in gt_nii.header.get_zooms()[:3])
-
-            gt_data = np.asanyarray(gt_nii.dataobj).astype(np.float32)
-            pred_data = np.asanyarray(pred_nii.dataobj).astype(np.float32)
+            gt_data = gt_data.astype(np.float32)
+            pred_data = pred_data.astype(np.float32)
         except Exception as e:
             tqdm.write(f"[WARNING] Error reading NIfTI for {scan_id}: {e}")
             continue
@@ -624,14 +636,14 @@ def main():
                 continue
 
             try:
-                ct_nii = nib.load(str(img_path))
-                gt_nii = nib.load(str(gt_path))
-                pred_nii = nib.load(str(pred_path))
+                ct_raw, ct_nii, _ = load_nifti_ras(img_path)
+                gt_raw, gt_nii, _ = load_nifti_ras(gt_path)
+                pred_raw, pred_nii, _ = load_nifti_ras(pred_path)
 
                 # Reorient CT, GT, Pred to canonical orientation (X, Y, Z) -> transpose to (Z, Y, X)
-                ct_raw = np.asanyarray(ct_nii.dataobj).astype(np.float32)
-                gt_raw = np.asanyarray(gt_nii.dataobj).astype(np.float32)
-                pred_raw = np.asanyarray(pred_nii.dataobj).astype(np.float32)
+                ct_raw = ct_raw.astype(np.float32)
+                gt_raw = gt_raw.astype(np.float32)
+                pred_raw = pred_raw.astype(np.float32)
 
                 if gt_raw.ndim == 3:
                     gt_raw = np.expand_dims(gt_raw, axis=0)

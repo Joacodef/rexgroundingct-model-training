@@ -21,11 +21,12 @@ rexgroundingct-model-training/
 │   └── phase_3_training/       # Phase 3 Mean Teacher fine-tuning logs
 ├── scratch/                    # Fine-tuning scratch scripts & temporary evaluation tools
 ├── scripts/                    # Core inference, training, & dataloading pipeline
-│   ├── analysis/               # Diagnostic profilers (analyze_predictions.py) & visualizers (plot_single_case.py)
-│   ├── common/                 # Spatial engine (orientation.py) & evaluator (evaluate.py)
+│   ├── analysis/               # Post-hoc diagnostic profilers & CT visualizers
+│   ├── common/                 # Spatial orientation engine, volume preprocessor, & metric evaluator
 │   ├── phase_2a_rule_based/    # Phase 2A non-neural statistical baseline pipeline
 │   ├── phase_2b_voxtell/       # Phase 2B VoxTell zero-shot baseline audit pipeline
 │   └── phase_3_training/       # Phase 3 PyTorch semi-supervised fine-tuning pipeline
+├── tests/                      # Automated test suite for spatial engine and utilities
 ├── .env.example                # Environment variable configuration template
 └── README.md                   # Primary repository documentation
 ```
@@ -66,17 +67,14 @@ Run sliding window inference on validation scans with canonical RAS spatial alig
 python scripts/phase_2b_voxtell/exp_001_voxtell_inference.py
 ```
 
-#### Diagnostic Failure Snapshot Generator
-Harvest 2D qualitative slice snapshots for top-K worst prediction failures:
+#### Diagnostic Quantitative Statistical Profiler
+Run quantitative 3D/4D segmentation mask statistical profiler:
 ```bash
-python scripts/analysis/analyze_predictions.py \
+python scripts/analysis/prediction_stats.py \
     --pred_dir ../data/predictions/phase_2a_rule_based \
     --gt_dir ../data/raw/segmentations \
-    --img_dir ../data/raw/images \
     --split val \
-    --top_k_failures 10 \
-    --save_snapshots \
-    --output_dir logs/phase_2a_rule_based/exp_001_seg_masks_priors/failure_snapshots
+    --output_json logs/phase_2a_rule_based/exp_001_seg_masks_priors/diagnostic_stats.json
 ```
 
 #### 6-Slice 2D CT Cross-Sectional Visualizer & Downloadable NIfTI ZIP Exporter

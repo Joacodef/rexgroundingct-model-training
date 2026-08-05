@@ -1,43 +1,28 @@
 """
 ===============================================================================
-SHARED UTILITY:   3D/4D Prediction & Segmentation Mask Analyzer
-LOCATION:         scripts/analysis/analyze_predictions.py
-OBJECTIVE:        Unified quantitative profiling and qualitative failure 
-                  analysis tool for 3D/4D CT grounding segmentation masks 
-                  (VoxTell, Rule-Based Priors, Mean Teacher, GT masks).
-FEATURES:         - Quantitative: Dice, Hit Rate, Precision, Recall, Volumetric 
-                    Over/Under-Segmentation (cm³), FP/FN Volumes, Centroid Shift (mm), 
-                    3D Connected Component Topology (# Blobs, min/max blob size).
-                  - Qualitative: Top-K worst failure case harvesting and 2D slice 
-                    snapshot generator (Axial/Coronal CT overlays: GT green, Pred red).
-                  - Single-scan CLI inspection mode (--inspect_scan).
-USAGE:            python scripts/analysis/analyze_predictions.py \
+SHARED UTILITY:   3D/4D Prediction & Segmentation Mask Statistical Profiler
+LOCATION:         scripts/analysis/prediction_stats.py
+OBJECTIVE:        Unified quantitative profiling tool for 3D/4D CT grounding
+                  segmentation masks (VoxTell, Rule-Based Priors, Mean Teacher, 
+                  GT masks). Computes volumetric (cm³), spatial alignment (mm), 
+                  precision/recall, Dice, Hit Rate, and 3D connected component 
+                  topology metrics (# Blobs, max blob size).
+USAGE:            python scripts/analysis/prediction_stats.py \
                       --pred_dir ../data/predictions/phase_2b_voxtell \
                       --gt_dir ../data/raw/segmentations \
-                      --img_dir ../data/raw/images \
                       --split val \
-                      --top_k_failures 10 \
-                      --save_snapshots
+                      --output_json logs/phase_2b_voxtell/diagnostic_stats.json
 ===============================================================================
 """
 
 import os
 import sys
-import gc
 import json
-import ctypes
 import argparse
 import numpy as np
-import nibabel as nib
 from pathlib import Path
 from tqdm import tqdm
-from dotenv import load_dotenv
 from scipy.ndimage import label, center_of_mass
-
-import matplotlib
-matplotlib.use('Agg')  # Headless rendering
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
 # Resolve repository root
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -45,7 +30,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from scripts.config import (
-    RAW_IMAGES_DIR, RAW_MASKS_DIR, PREDICTIONS_DIR, 
+    RAW_MASKS_DIR, PREDICTIONS_DIR, 
     DATASET_JSON, LOGS_DIR, CATEGORY_MAP
 )
 from scripts.common.orientation import load_nifti_ras
@@ -53,20 +38,10 @@ from scripts.common.orientation import load_nifti_ras
 
 def parse_args() -> argparse.Namespace:
     """
-    Signature:
-        parse_args() -> argparse.Namespace
-
-    Objective:
-        Parse command-line arguments for 3D/4D segmentation mask profiling and qualitative failure snapshot rendering.
-
-    Inputs:
-        None
-
-    Outputs:
-        argparse.Namespace: Parsed CLI argument namespace.
+    Parse command-line arguments for 3D/4D segmentation mask quantitative statistical profiling.
     """
     parser = argparse.ArgumentParser(
-        description="Unified 3D/4D Segmentation Mask Diagnostic Profiler & Qualitative Failure Snapshot Generator"
+        description="Unified 3D/4D Segmentation Mask Quantitative Statistical Profiler"
     )
     parser.add_argument(
         "--pred_dir", type=str, default=str(PREDICTIONS_DIR / "phase_2b_voxtell"),
@@ -75,10 +50,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gt_dir", type=str, default=str(RAW_MASKS_DIR),
         help="Path to raw GT segmentations directory"
-    )
-    parser.add_argument(
-        "--img_dir", type=str, default=str(RAW_IMAGES_DIR),
-        help="Path to raw CT images directory (required for qualitative 2D slice snapshots)"
     )
     parser.add_argument(
         "--dataset_json", type=str, default=str(DATASET_JSON),
@@ -93,20 +64,8 @@ def parse_args() -> argparse.Namespace:
         help="Path to save quantitative diagnostic JSON output"
     )
     parser.add_argument(
-        "--output_dir", type=str, default=None,
-        help="Directory to save qualitative 2D failure slice PNG snapshots"
-    )
-    parser.add_argument(
-        "--top_k_failures", type=int, default=10,
-        help="Number of top worst-performing failure cases to harvest (default: 10)"
-    )
-    parser.add_argument(
-        "--save_snapshots", action="store_true", default=False,
-        help="Generate and save 2D slice PNG snapshot overlays for top failure cases"
-    )
-    parser.add_argument(
         "--inspect_scan", type=str, default=None,
-        help="Single scan ID to inspect qualitatively (e.g. --inspect_scan 10045)"
+        help="Single scan ID to inspect quantitatively (e.g. --inspect_scan 10045)"
     )
     parser.add_argument(
         "--start_idx", type=int, default=0, help="Start index for processing entries"
@@ -218,129 +177,6 @@ def compute_mask_pair_metrics(pred_3d: np.ndarray, gt_3d: np.ndarray, spacing_mm
     }
 
 
-def generate_slice_snapshot(
-    ct_3d: np.ndarray,
-    gt_3d: np.ndarray,
-    pred_3d: np.ndarray,
-    meta: dict,
-    save_path: Path
-):
-    """
-    Signature:
-        generate_slice_snapshot(ct_3d: np.ndarray, gt_3d: np.ndarray, pred_3d: np.ndarray, meta: dict, save_path: Path) -> None
-
-    Objective:
-        Generate and save a 4-panel qualitative 2D slice PNG snapshot (Axial + Coronal views)
-        displaying CT intensity, Ground Truth (Green), Prediction (Red), and Overlap (Yellow).
-
-    Inputs:
-        ct_3d (np.ndarray): 3D CT volume image array (HU intensities) with shape (Z, Y, X).
-        gt_3d (np.ndarray): 3D binary Ground Truth mask array with shape (Z, Y, X).
-        pred_3d (np.ndarray): 3D binary Model Prediction mask array with shape (Z, Y, X).
-        meta (dict): Metadata dictionary containing scan_id, category_code, dice, prompt, etc.
-        save_path (Path): Target file path where the PNG snapshot image will be saved.
-
-    Outputs:
-        None (Saves 2D composite visualization image to save_path).
-    """
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Determine slice indices passing through GT center of mass (or Pred center of mass)
-    gt_bool = (gt_3d > 0)
-    pred_bool = (pred_3d > 0)
-
-    if gt_bool.any():
-        com = center_of_mass(gt_bool)
-    elif pred_bool.any():
-        com = center_of_mass(pred_bool)
-    else:
-        com = (ct_3d.shape[0] // 2, ct_3d.shape[1] // 2, ct_3d.shape[2] // 2)
-
-    slice_z = int(np.clip(round(com[0]), 0, ct_3d.shape[0] - 1))
-    slice_y = int(np.clip(round(com[1]), 0, ct_3d.shape[1] - 1))
-
-    # Windowing for CT image (Lung Window: Level=-600, Width=1500 -> [-1350, +150])
-    vmin, vmax = -1350, 150
-    ct_axial = np.clip(ct_3d[slice_z, :, :], vmin, vmax)
-    ct_coronal = np.clip(ct_3d[:, slice_y, :], vmin, vmax)
-
-    gt_axial = gt_3d[slice_z, :, :] > 0
-    pred_axial = pred_3d[slice_z, :, :] > 0
-
-    gt_coronal = gt_3d[:, slice_y, :] > 0
-    pred_coronal = pred_3d[:, slice_y, :] > 0
-
-    fig, axes = plt.subplots(2, 4, figsize=(20, 10))
-    fig.patch.set_facecolor('#0f172a')  # Dark theme background
-
-    # Formatting Title Header
-    scan_id = meta.get("scan_id", "Unknown")
-    cat_code = meta.get("category_code", "")
-    cat_name = CATEGORY_MAP.get(cat_code, "Unknown")
-    dice = meta.get("dice", 0.0)
-    gt_vol = meta.get("gt_vol_cm3", 0.0)
-    pred_vol = meta.get("pred_vol_cm3", 0.0)
-    shift_mm = meta.get("centroid_err_mm", None)
-    prompt = meta.get("prompt", "")
-
-    title_str = (
-        f"Scan: {scan_id}  |  Category: [{cat_code}] {cat_name}  |  Dice: {dice:.4f}\n"
-        f"GT Vol: {gt_vol:.2f} cm³  |  Pred Vol: {pred_vol:.2f} cm³  |  Shift: {f'{shift_mm:.1f} mm' if shift_mm is not None else 'N/A'}\n"
-        f"Prompt: \"{prompt[:90]}\""
-    )
-    fig.suptitle(title_str, color='white', fontsize=14, fontweight='bold', y=0.98)
-
-    # Subplot titles
-    titles = ["Raw CT Image", "Ground Truth (Green)", "Prediction (Red)", "Composite Overlay (Yellow=Overlap)"]
-
-    for col_idx in range(4):
-        # Top Row: Axial View
-        ax_ax = axes[0, col_idx]
-        ax_ax.set_facecolor('black')
-        ax_ax.imshow(ct_axial, cmap='gray', origin='lower')
-        ax_ax.set_title(f"Axial (Z={slice_z})\n{titles[col_idx]}", color='white', fontsize=11)
-        ax_ax.axis('off')
-
-        # Bottom Row: Coronal View
-        ax_cor = axes[1, col_idx]
-        ax_cor.set_facecolor('black')
-        ax_cor.imshow(ct_coronal, cmap='gray', origin='lower')
-        ax_cor.set_title(f"Coronal (Y={slice_y})\n{titles[col_idx]}", color='white', fontsize=11)
-        ax_cor.axis('off')
-
-        # Overlays
-        if col_idx == 1:  # GT Only
-            ax_ax.imshow(np.ma.masked_where(~gt_axial, gt_axial), cmap='Greens', alpha=0.5, origin='lower', vmin=0, vmax=1)
-            ax_cor.imshow(np.ma.masked_where(~gt_coronal, gt_coronal), cmap='Greens', alpha=0.5, origin='lower', vmin=0, vmax=1)
-        elif col_idx == 2:  # Pred Only
-            ax_ax.imshow(np.ma.masked_where(~pred_axial, pred_axial), cmap='Reds', alpha=0.5, origin='lower', vmin=0, vmax=1)
-            ax_cor.imshow(np.ma.masked_where(~pred_coronal, pred_coronal), cmap='Reds', alpha=0.5, origin='lower', vmin=0, vmax=1)
-        elif col_idx == 3:  # Composite Overlay
-            # GT in Green, Pred in Red, Overlap in Yellow
-            comp_axial = np.zeros((*gt_axial.shape, 3), dtype=np.float32)
-            comp_axial[gt_axial, 1] = 0.9  # Green
-            comp_axial[pred_axial, 0] = 0.9  # Red
-            mask_ax = gt_axial | pred_axial
-            ax_ax.imshow(np.ma.masked_where(~np.stack([mask_ax]*3, axis=-1), comp_axial), alpha=0.6, origin='lower')
-
-            comp_coronal = np.zeros((*gt_coronal.shape, 3), dtype=np.float32)
-            comp_coronal[gt_coronal, 1] = 0.9  # Green
-            comp_coronal[pred_coronal, 0] = 0.9  # Red
-            mask_cor = gt_coronal | pred_coronal
-            ax_cor.imshow(np.ma.masked_where(~np.stack([mask_cor]*3, axis=-1), comp_coronal), alpha=0.6, origin='lower')
-
-    # Legend at bottom
-    green_patch = mpatches.Patch(color='green', label='Ground Truth')
-    red_patch = mpatches.Patch(color='red', label='Prediction')
-    yellow_patch = mpatches.Patch(color='yellow', label='Overlap / Agreement')
-    fig.legend(handles=[green_patch, red_patch, yellow_patch], loc='lower center', ncol=3, frameon=True, facecolor='#1e293b', edgecolor='none', labelcolor='white')
-
-    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
-    plt.savefig(str(save_path), dpi=150, bbox_inches='tight', facecolor=fig.get_facecolor())
-    plt.close(fig)
-    gc.collect()
-
-
 def match_prompt_category(prompt_text: str) -> str:
     """
     Signature:
@@ -375,13 +211,12 @@ def match_prompt_category(prompt_text: str) -> str:
 
 
 def main():
-    """Main entry point executing full 3D/4D mask profiling, error tier aggregation, report export, and snapshot rendering."""
+    """Main entry point executing full 3D/4D mask statistical profiling, error tier aggregation, and JSON report export."""
     args = parse_args()
 
     # Paths
     pred_dir = Path(args.pred_dir)
     gt_dir = Path(args.gt_dir)
-    img_dir = Path(args.img_dir)
     dataset_json_path = Path(args.dataset_json)
 
     # Resolve experiment subfolder under logs/
@@ -393,17 +228,13 @@ def main():
     exp_log_dir.mkdir(parents=True, exist_ok=True)
 
     out_json_path = Path(args.output_json) if args.output_json else exp_log_dir / f"diagnostic_analysis_{args.split}.json"
-    out_snapshots_dir = Path(args.output_dir) if args.output_dir else exp_log_dir / "failure_snapshots"
 
     print("=" * 80)
-    print("3D/4D Segmentation Mask Diagnostic Profiler & Failure Inspector")
+    print("3D/4D Segmentation Mask Quantitative Statistical Profiler")
     print(f"Target Split:             {args.split}")
     print(f"Prediction Directory:     {pred_dir}")
     print(f"Ground Truth Directory:   {gt_dir}")
-    print(f"CT Images Directory:      {img_dir}")
     print(f"Output Diagnostic JSON:   {out_json_path}")
-    if args.save_snapshots:
-        print(f"Snapshot Output Directory: {out_snapshots_dir}")
     print("=" * 80)
 
     if not pred_dir.exists():
@@ -441,7 +272,6 @@ def main():
 
         gt_path = gt_dir / f"{scan_id}.nii.gz"
         pred_path = pred_dir / f"{scan_id}.nii.gz"
-        img_path = img_dir / f"{scan_id}.nii.gz"
 
         if not gt_path.exists() or not pred_path.exists():
             missing_cases += 1
@@ -506,7 +336,6 @@ def main():
                 "prompt": prompt_text,
                 "gt_path": str(gt_path),
                 "pred_path": str(pred_path),
-                "img_path": str(img_path),
                 **metrics
             }
             eval_records.append(record)
@@ -523,7 +352,6 @@ def main():
                 category_summary[cat_code]["centroid_errs"].append(metrics["centroid_err_mm"])
 
         del gt_data, pred_data, gt_nii, pred_nii
-        gc.collect()
 
     if not eval_records:
         print("[ERROR] No valid finding pairs were evaluated.")
@@ -567,7 +395,7 @@ def main():
 
     # Print Terminal Diagnostic Summary Table
     print("\n" + "=" * 105)
-    print("                        3D/4D PREDICTION DIAGNOSTIC PROFILER SUMMARY")
+    print("                        3D/4D PREDICTION DIAGNOSTIC STATISTICAL PROFILER SUMMARY")
     print("=" * 105)
     print(f"Total Evaluated Findings:     {len(eval_records)} across {len(set(r['scan_id'] for r in eval_records))} scans")
     print(f"Average Dice (Primary Metric): {avg_dice:.4f}")
@@ -607,85 +435,7 @@ def main():
     out_json_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_json_path, 'w') as f:
         json.dump(report, f, indent=4)
-    print(f"\n[SUCCESS] Saved diagnostic analysis JSON to {out_json_path}")
-
-    # Qualitative Failure Harvesting & 2D Slice Snapshot Generation
-    if args.save_snapshots or args.inspect_scan:
-        print("\n" + "=" * 80)
-        print("Harvesting Top Failure Cases & Generating 2D Slice Snapshot Overlays...")
-        print("=" * 80)
-
-        # Sort evaluation records by lowest Dice score (or largest centroid error)
-        top_failures = sorted(eval_records, key=lambda r: (r["dice"], -r["gt_vol_cm3"]))[:args.top_k_failures]
-
-        if args.inspect_scan:
-            top_failures = eval_records
-
-        snapshot_count = 0
-        for fail_item in tqdm(top_failures, desc="Rendering Failure Snapshots"):
-            scan_id = fail_item["scan_id"]
-            f_idx = fail_item["finding_idx"]
-            cat_code = fail_item["category_code"]
-            img_path = Path(fail_item["img_path"])
-            gt_path = Path(fail_item["gt_path"])
-            pred_path = Path(fail_item["pred_path"])
-
-            if not img_path.exists():
-                tqdm.write(f"[WARNING] Raw CT image missing for snapshot: {img_path}")
-                continue
-
-            try:
-                ct_raw, ct_nii, _ = load_nifti_ras(img_path)
-                gt_raw, gt_nii, _ = load_nifti_ras(gt_path)
-                pred_raw, pred_nii, _ = load_nifti_ras(pred_path)
-
-                # Reorient CT, GT, Pred to canonical orientation (X, Y, Z) -> transpose to (Z, Y, X)
-                ct_raw = ct_raw.astype(np.float32)
-                gt_raw = gt_raw.astype(np.float32)
-                pred_raw = pred_raw.astype(np.float32)
-
-                if gt_raw.ndim == 3:
-                    gt_raw = np.expand_dims(gt_raw, axis=0)
-                if gt_raw.ndim == 4 and gt_raw.shape[-1] < np.min(gt_raw.shape[:-1]):
-                    gt_raw = np.moveaxis(gt_raw, -1, 0)
-
-                if pred_raw.ndim == 3:
-                    pred_raw = np.expand_dims(pred_raw, axis=0)
-                if pred_raw.ndim == 4 and pred_raw.shape[-1] < np.min(pred_raw.shape[:-1]):
-                    pred_raw = np.moveaxis(pred_raw, -1, 0)
-
-                gt_3d = gt_raw[f_idx]
-                pred_3d = pred_raw[f_idx]
-
-                # Standardize 3D CT volume to (Z, Y, X)
-                if ct_raw.ndim == 3:
-                    ct_3d = np.transpose(ct_raw, (2, 1, 0))  # (X, Y, Z) -> (Z, Y, X)
-                else:
-                    ct_3d = ct_raw
-
-                # Transpose 3D masks to match (Z, Y, X)
-                if gt_3d.shape != ct_3d.shape and gt_3d.shape[::-1] == ct_3d.shape:
-                    gt_3d = np.transpose(gt_3d, (2, 1, 0))
-                    pred_3d = np.transpose(pred_3d, (2, 1, 0))
-
-                out_snapshot_path = out_snapshots_dir / f"fail_rank{snapshot_count+1:02d}_{scan_id}_f{f_idx}_{cat_code}_dice{fail_item['dice']:.3f}.png"
-
-                generate_slice_snapshot(
-                    ct_3d=ct_3d,
-                    gt_3d=gt_3d,
-                    pred_3d=pred_3d,
-                    meta=fail_item,
-                    save_path=out_snapshot_path
-                )
-                snapshot_count += 1
-
-                del ct_raw, gt_raw, pred_raw, ct_3d, gt_3d, pred_3d
-                gc.collect()
-            except Exception as e:
-                tqdm.write(f"[WARNING] Failed snapshot generation for {scan_id}: {e}")
-                continue
-
-        print(f"[SUCCESS] Exported {snapshot_count} 2D failure slice PNG snapshots to {out_snapshots_dir}")
+    print(f"\n[SUCCESS] Saved diagnostic statistical analysis JSON to {out_json_path}")
 
 
 if __name__ == "__main__":

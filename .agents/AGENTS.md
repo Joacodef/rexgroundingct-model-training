@@ -45,6 +45,7 @@ You MUST always run persistent tasks in one of the following ways:
 ### 4. Centralized Spatial Alignment & Canonical RAS Orientation
 * **Centralized Spatial Engine (`scripts/common/orientation.py`)**: All NIfTI volumes (ground truth, images, and model predictions) MUST be loaded, inspected, and saved using the centralized spatial functions `load_nifti_ras()` and `save_nifti()`.
 * **Prohibited: Manual Transposes & Naive Shape Assertions**: NEVER rely on manual array transposes or naive shape checks (e.g. `shape == (512, 512, 456)`) to assume anatomical orientation. Always inspect and canonicalize spatial orientation using `scripts/common/orientation.py`.
+* **Domain-Driven Spatial Anchoring**: Segmentation masks conceptually lack independent physical orientation. Their spatial affine MUST strictly be inherited from the parent CT scan. `scripts/common/orientation.py` enforces this natively by always anchoring 4D mask loads to their parent CT scan, ignoring the mask's internal NIfTI header.
 
 ### 5. Directory & Structure Conventions
 * `scripts/`: Categorized into shared utilities (`common/`) and phase-specific execution pipelines (`phase_2a_rule_based/`, `phase_2b_voxtell/`, `phase_3_training/`).

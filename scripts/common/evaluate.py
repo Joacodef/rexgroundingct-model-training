@@ -28,6 +28,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from scripts.config import (
     RAW_MASKS_DIR,
+    RAW_IMAGES_DIR,
     PREDICTIONS_DIR,
     DATASET_JSON,
     DATA_DIR,
@@ -68,6 +69,7 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate 4D predictions for ReXGroundingCT")
     
     parser.add_argument("--gt_dir", type=str, default=str(RAW_MASKS_DIR), help="Directory containing raw GT masks")
+    parser.add_argument("--img_dir", type=str, default=str(RAW_IMAGES_DIR), help="Directory containing raw CT images for spatial anchoring")
     parser.add_argument("--pred_dir", type=str, default=str(PREDICTIONS_DIR), help="Directory containing predicted masks")
     parser.add_argument("--dataset_json", type=str, default=str(DATASET_JSON), help="Path to dataset.json")
     
@@ -123,9 +125,16 @@ def main():
             missing_cases += 1
             continue
             
-        # Load GT and Pred into canonical RAS space using centralized spatial engine
-        gt_img, _, _ = load_nifti_ras(gt_path)
-        pred_img, _, _ = load_nifti_ras(pred_path)
+        # Load GT and Prediction 4D volumes in canonical RAS space
+        ct_matching_path = Path(args.img_dir) / f"{scan_id}.nii.gz" if args.img_dir else None
+        if ct_matching_path and ct_matching_path.exists():
+            _, ref_ct_nii, _ = load_nifti_ras(ct_matching_path)
+            ref_affine = ref_ct_nii.affine
+        else:
+            ref_affine = None
+
+        gt_img, _, _ = load_nifti_ras(gt_path, ref_affine=ref_affine)
+        pred_img, _, _ = load_nifti_ras(pred_path, ref_affine=ref_affine)
         
         # Expand 3D volumes to 4D (1, X, Y, Z) if single finding
         if gt_img.ndim == 3:

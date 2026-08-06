@@ -285,6 +285,38 @@ def test_orientation_real_val_scans():
     assert nib.orientations.aff2axcodes(ras_nii.affine) == ('R', 'A', 'S')
 
 
+import unittest
+
+
+class TestOrientation(unittest.TestCase):
+    """unittest.TestCase wrapper for centralized spatial orientation engine test suite."""
+
+    def test_all_orientation_tests(self):
+        test_functions = [
+            test_load_nifti_ras_canonical_ras,
+            test_load_nifti_ras_non_ras_affines,
+            test_load_nifti_ras_4d_channels,
+            test_load_nifti_ras_cropped_patch_4d,
+            test_load_nifti_ras_non_finite_affine,
+            test_load_nifti_ras_oblique_affine,
+            test_load_nifti_ras_anisotropic_scaling,
+            test_load_nifti_ras_header_slope_intercept,
+            test_load_nifti_ras_file_not_found,
+            test_save_nifti_3d_round_trip,
+            test_save_nifti_enforces_challenge_fxyz_format_despite_standard_conventions,
+            test_save_nifti_default_affine_fallback,
+            test_orientation_real_val_scans
+        ]
+        for test_fn in test_functions:
+            test_name = test_fn.__name__
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_path = Path(tmp_dir)
+                if test_name == "test_orientation_real_val_scans":
+                    test_fn()
+                else:
+                    test_fn(tmp_path)
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("      RUNNING CENTRALIZED SPATIAL ORIENTATION ENGINE TEST SUITE")

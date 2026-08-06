@@ -122,7 +122,7 @@ def run_prior_inference_and_eval(
         # Generate 3D spatial prior mask per finding category
         finding_masks_xyz = []
         for cat_code in category_codes:
-            mask_3d = predictor.generate_prediction_mask(cat_code=cat_code, target_shape_ras=target_shape_xyz)
+            mask_3d = predictor.generate_prediction_mask(cat_code=cat_code, target_shape_ras=target_shape_xyz, ct_img_ras=raw_img_ras)
             finding_masks_xyz.append(mask_3d)
 
         # Stack into 4D tensor (F, X, Y, Z) matching ReXGroundingCT specification

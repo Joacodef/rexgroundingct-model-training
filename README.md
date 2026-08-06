@@ -61,6 +61,27 @@ Run Exp 002 (Empirical Volume Quantile Matching Baseline):
 python scripts/phase_2a_rule_based/exp_002_spatial_priors_quantile.py --split val --eval
 ```
 
+Run Exp 003 (Radiodensity HU Intensity Windowing + Quantile Baseline):
+```bash
+python scripts/phase_2a_rule_based/exp_003_hu_windowed_priors.py --split val --eval
+```
+
+#### Automated Test Suite Execution
+Run automated unit and integration test suites:
+```bash
+# Prior Engine Test Suite (9/9 passed)
+python tests/test_prior_engine.py
+
+# Spatial Orientation Engine Test Suite (13/13 passed)
+python tests/test_orientation.py
+
+# Phase 2A Runner Test Suite
+python tests/test_phase_2a_runner.py
+
+# Run full unittest discovery across all tests
+python -m unittest discover -s tests -p "test_*.py"
+```
+
 #### Phase 2B: Zero-Shot VoxTell Baseline Inference
 Run sliding window inference on validation scans with canonical RAS spatial alignment (`scripts/common/orientation.py`):
 ```bash
@@ -86,7 +107,7 @@ python scripts/analysis/plot_single_case.py --scan_id train_19891_a_2
 ### 3. Metric Evaluation
 Standalone official metric evaluation for predicted 4D segmentation masks against ground-truth masks:
 ```bash
-python scripts/common/evaluate.py --gt_dir ../data/raw/segmentations --pred_dir ../data/predictions/phase_2a_rule_based --split val
+python scripts/common/evaluate.py --gt_dir ../data/raw/segmentations --img_dir ../data/raw/images --pred_dir ../data/predictions/phase_2a_rule_based --split val
 ```
 
 ### 4. PyTorch Mean Teacher Fine-Tuning (Phase 3)

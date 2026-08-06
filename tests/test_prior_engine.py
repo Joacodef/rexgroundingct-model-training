@@ -345,6 +345,36 @@ def test_generate_prediction_mask_all_zero_pdf(tmp_path: Path):
     assert np.all(pred_mask == 0)
 
 
+def test_generate_prediction_mask_hu_windowing(tmp_path: Path):
+    """
+    Signature:
+        test_generate_prediction_mask_hu_windowing(tmp_path: Path) -> None
+
+    Objective:
+        Verify generate_prediction_mask zeroes out voxels outside category HU radiodensity bounds.
+    """
+    cache_file = tmp_path / "hu_test_cache.npz"
+    grid = np.ones((32, 32, 32), dtype=np.float32)
+    np.savez_compressed(cache_file, **{"1c": grid})
+
+    engine = EmpiricalSpatialPDFBaseline(
+        pdf_cache_path=cache_file,
+        dataset_json_path=tmp_path / "dataset.json",
+        seg_raw_dir=tmp_path / "raw_masks",
+        force_rebuild=False,
+        threshold_mode="hu_quantile",
+    )
+
+    # Synthetic CT image: Half valid HU (-500 HU), Half invalid HU (+1000 HU for Emphysema '1c' whose max is +252 HU)
+    ct_img = np.full((32, 32, 32), -500.0, dtype=np.float32)
+    ct_img[:, :, 16:] = 1000.0  # Invalid HU region for 1c
+
+    pred_mask = engine.generate_prediction_mask(cat_code="1c", target_shape_ras=(32, 32, 32), ct_img_ras=ct_img)
+    assert pred_mask.shape == (32, 32, 32)
+    # The invalid HU region (Z >= 16) must be completely zeroed out
+    assert np.all(pred_mask[:, :, 16:] == 0)
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("      RUNNING EMPIRICAL SPATIAL PDF BASELINE ENGINE TEST SUITE")
@@ -359,6 +389,7 @@ if __name__ == "__main__":
         test_generate_prediction_mask_noise_pruning,
         test_generate_prediction_mask_unknown_category_fallback,
         test_generate_prediction_mask_all_zero_pdf,
+        test_generate_prediction_mask_hu_windowing,
     ]
 
     passed = 0

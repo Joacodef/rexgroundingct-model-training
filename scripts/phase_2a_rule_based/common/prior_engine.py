@@ -69,6 +69,25 @@ EMPIRICAL_VOLUME_QUANTILES = {
     "2h": 0.005,  # Other focal (~0.5% volume)
 }
 
+# Empirical 5th-95th percentile Hounsfield Unit (HU) radiodensity bounds per category for Exp 003.
+# DERIVATION: Derived from Phase 1 empirical attenuation profiling (PHASE_1_DATA_ANALYSIS_SUMMARY.md).
+CATEGORY_HU_BOUNDS = {
+    "1a": (-933.0, 69.0),   # Bronchial wall thickening (airway + peribronchial soft tissue)
+    "1b": (-934.0, 86.0),   # Bronchiectasis (airway lumen + wall)
+    "1c": (-992.0, 252.0),  # Emphysema (hyper-inflated trapped air)
+    "1d": (-1001.0, 121.0), # Septal thickening (interstitial)
+    "1e": (-998.0, 101.0),  # Micronodules (small soft tissue nodules)
+    "1f": (-986.0, 98.0),   # Other non-focal
+    "2a": (-992.0, 399.0),  # Linear opacities (dense linear soft tissue/calcifications)
+    "2b": (-995.0, 130.0),  # Atelectasis / consolidation (dense collapsed parenchymal)
+    "2c": (-995.0, 138.0),  # Ground-glass opacity (hazy parenchymal)
+    "2d": (-995.0, 194.0),  # Pulmonary nodules / masses (dense solid soft tissue)
+    "2e": (-1007.0, 135.0), # Pleural effusion / thickening (fluid / pleural tissue)
+    "2f": (-905.0, 83.0),   # Honeycombing (subpleural fibrotic restructuring)
+    "2g": (-962.0, 145.0),  # Pneumothorax (pleural air cavity)
+    "2h": (-915.0, 195.0),  # Other focal
+}
+
 
 class EmpiricalSpatialPDFBaseline:
     """
@@ -287,18 +306,20 @@ class EmpiricalSpatialPDFBaseline:
         spatial_pdfs = {code: npz_file[code].astype(np.float32) for code in npz_file.files}
         return spatial_pdfs
 
-    def generate_prediction_mask(self, cat_code: str, target_shape_ras: tuple) -> np.ndarray:
+    def generate_prediction_mask(self, cat_code: str, target_shape_ras: tuple, ct_img_ras: np.ndarray = None) -> np.ndarray:
         """
         Signature:
-            generate_prediction_mask(cat_code: str, target_shape_ras: tuple) -> np.ndarray
+            generate_prediction_mask(cat_code: str, target_shape_ras: tuple, ct_img_ras: np.ndarray = None) -> np.ndarray
 
         Objective:
             Generate a 3D binary segmentation mask for a target scan by resampling the 3D category PDF
-            heatmap to target_shape_ras and applying thresholding and component filtering.
+            heatmap to target_shape_ras, applying HU radiodensity windowing (if ct_img_ras is provided),
+            and performing thresholding and component filtering.
 
         Inputs:
             cat_code (str): Category finding code ('1a'..'2h').
             target_shape_ras (tuple): Target 3D volume shape (X, Y, Z).
+            ct_img_ras (np.ndarray, optional): Raw CT HU intensity volume array with shape matching target_shape_ras.
 
         Outputs:
             np.ndarray: 3D uint8 binary prediction mask array with shape matching target_shape_ras.
@@ -322,13 +343,19 @@ class EmpiricalSpatialPDFBaseline:
         else:
             pdf_target = pdf_np.copy()
 
+        # 1.5 Radiodensity HU Intensity Filtering (Exp 003)
+        if ct_img_ras is not None and isinstance(ct_img_ras, np.ndarray) and ct_img_ras.shape == target_shape_ras:
+            min_hu, max_hu = CATEGORY_HU_BOUNDS.get(code, (-1000.0, 300.0))
+            invalid_hu = (ct_img_ras < min_hu) | (ct_img_ras > max_hu)
+            pdf_target[invalid_hu] = 0.0
+
         max_p = float(pdf_target.max())
         if max_p <= 0:
             return np.zeros(target_shape_ras, dtype=np.uint8)
 
         # 2. Binarization Strategy Selection
-        if self.threshold_mode == "quantile":
-            # Exp 002: Empirical Volume Quantile Matching Strategy
+        if self.threshold_mode in ("quantile", "hu_quantile"):
+            # Exp 002 & Exp 003: Empirical Volume Quantile Matching Strategy
             # Select top K voxels corresponding to Phase 1 expected category volume ratio
             target_ratio = EMPIRICAL_VOLUME_QUANTILES.get(code, 0.005)
             # Compute probability cutoff value at (1 - target_ratio) quantile

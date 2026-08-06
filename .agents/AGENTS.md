@@ -51,6 +51,7 @@ You MUST always run persistent tasks in one of the following ways:
 * `scripts/`: Categorized into shared utilities (`common/`) and phase-specific execution pipelines (`phase_2a_rule_based/`, `phase_2b_voxtell/`, `phase_3_training/`).
 * **Experiment Log Pairing & Subfolder Convention**: Experiment scripts follow `exp_XXX_<description>.py` and pair 1:1 with corresponding dedicated experiment subfolders `logs/<phase>/<exp_name>/` (containing `eval.md`, `eval_results_val.json`, `run.log`, and `failure_snapshots/`).
 * **Function Signature & Docstring Directive**: Standard library/utility functions and class methods MUST include a docstring as their very first statement outlining the function signature, a concise explanation of what the function does, its input arguments, and expected return outputs (boilerplate CLI helpers like `main()` and `parse_args()` only require a concise high-level docstring without a signature block).
+* **MONAI Framework Preference Contract**: Wherever reasonable and applicable (such as GPU-accelerated spatial resampling, intensity normalization, transform pipelines, and deep learning preprocessing), MONAI (`monai.transforms`) should be preferred for 3D medical image and mask operations, provided it respects the centralized spatial engine contracts in `scripts/common/orientation.py`.
 
 ---
 

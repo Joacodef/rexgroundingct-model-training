@@ -59,7 +59,7 @@ def compute_dice(pred_mask: np.ndarray, gt_mask: np.ndarray) -> float:
     union = pred_bool.sum() + gt_bool.sum()
     
     if union == 0:
-        # If both masks are empty, the match is perfect (1.0).
+        # If both masks are empty, Dice equals 1.0.
         return 1.0 if intersection == 0 else 0.0
     return 2. * intersection / union
 

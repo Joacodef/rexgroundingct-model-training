@@ -50,15 +50,15 @@ pip install -r requirements/voxtell.txt
 
 ### 2. Phase 2 Baselines & Diagnostics
 
-#### Phase 2A: Empirical 3D Spatial PDF Prior Baseline
-Build 3D spatial probability density heatmaps cache (Task 1, run once):
+#### Phase 2A: Empirical 3D Spatial PDF Prior Baselines
+Run Exp 001 (Percentile Factor Spatial Prior Baseline):
 ```bash
-python scripts/phase_2a_rule_based/exp_001_seg_masks_priors/01_build_spatial_pdf_cache.py
+python scripts/phase_2a_rule_based/exp_001_spatial_priors_percentile.py --split val --eval
 ```
 
-Run non-neural spatial probability density baseline generator and evaluator (Tasks 2 & 3):
+Run Exp 002 (Empirical Volume Quantile Matching Baseline):
 ```bash
-python scripts/phase_2a_rule_based/exp_001_seg_masks_priors/02_run_inference_and_eval.py --split val --eval
+python scripts/phase_2a_rule_based/exp_002_spatial_priors_quantile.py --split val --eval
 ```
 
 #### Phase 2B: Zero-Shot VoxTell Baseline Inference
@@ -74,7 +74,7 @@ python scripts/analysis/prediction_stats.py \
     --pred_dir ../data/predictions/phase_2a_rule_based \
     --gt_dir ../data/raw/segmentations \
     --split val \
-    --output_json logs/phase_2a_rule_based/exp_001_seg_masks_priors/diagnostic_stats.json
+    --output_json logs/phase_2a_rule_based/exp_001_spatial_priors_percentile/diagnostic_stats.json
 ```
 
 #### 6-Slice 2D CT Cross-Sectional Visualizer & Downloadable NIfTI ZIP Exporter

@@ -1,0 +1,353 @@
+"""
+===============================================================================
+MODULE:         Empirical Spatial PDF Baseline Engine (Modular Framework)
+LOCATION:       scripts/phase_2a_rule_based/common/prior_engine.py
+OBJECTIVE:      Core PyTorch / Nibabel processing class for building, loading, 
+                and resampling 3D empirical spatial probability density heatmaps.
+                Supports both standard percentile thresholding (Exp 001) and 
+                Empirical Volume Quantile Matching (Exp 002).
+===============================================================================
+"""
+
+import os
+import sys
+import gc
+import json
+import numpy as np
+import torch
+import torch.nn.functional as F
+import nibabel as nib
+from pathlib import Path
+from tqdm import tqdm
+from scipy.ndimage import label
+
+# Resolve repository root
+ROOT_DIR = Path(__file__).resolve().parents[3]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from scripts.config import CATEGORY_MAP
+from nnunetv2.imageio.nibabel_reader_writer import NibabelIOWithReorient
+from scripts.common.orientation import load_nifti_ras
+
+
+# Calibrated category threshold factors for Exp 001 (p_c = factor * max_p).
+# DERIVATION: Derived from Phase 1 empirical cumulative density profiling and morphological sphericity.
+CATEGORY_THRESHOLD_FACTORS = {
+    "1a": 0.35,  # Bronchial wall thickening (hilar/peribronchial)
+    "1b": 0.40,  # Bronchiectasis (airway tree)
+    "1c": 0.40,  # Emphysema (apical dominant)
+    "1d": 0.40,  # Septal thickening (interstitial)
+    "1e": 0.50,  # Micronodules (multi-focal clusters)
+    "1f": 0.40,  # Other non-focal
+    "2a": 0.50,  # Linear opacities (focal linear)
+    "2b": 0.35,  # Atelectasis / consolidation (basal dependent)
+    "2c": 0.35,  # Ground-glass opacity (patchy parenchymal)
+    "2d": 0.50,  # Pulmonary nodules / masses (focal spherical, S=0.94)
+    "2e": 0.30,  # Pleural effusion / thickening (basal dependent fluid)
+    "2f": 0.40,  # Honeycombing (subpleural basal)
+    "2g": 0.35,  # Pneumothorax (pleural boundary)
+    "2h": 0.40,  # Other focal
+}
+
+# Empirical Mean Volume Quantile Ratios for Exp 002 (Target V_pred / V_scan).
+# DERIVATION: Derived directly from Phase 1 ground-truth lesion volume statistics (PHASE_1_DATA_ANALYSIS_SUMMARY.md).
+EMPIRICAL_VOLUME_QUANTILES = {
+    "1a": 0.005,  # Bronchial wall thickening (~0.5% volume)
+    "1b": 0.008,  # Bronchiectasis (~0.8% volume)
+    "1c": 0.025,  # Emphysema (~2.5% apical volume)
+    "1d": 0.012,  # Septal thickening (~1.2% interstitial volume)
+    "1e": 0.003,  # Micronodules (~0.3% focal cluster volume)
+    "1f": 0.010,  # Other non-focal (~1.0% volume)
+    "2a": 0.002,  # Linear opacities (~0.2% linear volume)
+    "2b": 0.035,  # Atelectasis / consolidation (~3.5% dependent volume)
+    "2c": 0.030,  # Ground-glass opacity (~3.0% parenchymal volume)
+    "2d": 0.001,  # Pulmonary nodules / masses (~0.1% compact focal volume)
+    "2e": 0.045,  # Pleural effusion / thickening (~4.5% basal fluid volume)
+    "2f": 0.015,  # Honeycombing (~1.5% subpleural volume)
+    "2g": 0.020,  # Pneumothorax (~2.0% pleural cavity volume)
+    "2h": 0.005,  # Other focal (~0.5% volume)
+}
+
+
+class EmpiricalSpatialPDFBaseline:
+    """
+    Data-driven 3D Empirical Spatial Probability Density Baseline:
+    1. Accumulates training GT segmentations per category in canonical RAS space.
+    2. Computes empirical probability density P_c(z, y, x) = 1/N_c * sum(Mask_i).
+    3. Resamples P_c to target validation scan shape and thresholds to generate 3D/4D predictions.
+    """
+    CANONICAL_SHAPE = (512, 512, 512)
+
+    def __init__(
+        self,
+        pdf_cache_path: Path,
+        dataset_json_path: Path,
+        seg_raw_dir: Path,
+        img_raw_dir: Path = None,
+        max_train_scans: int = 300,
+        force_rebuild: bool = False,
+        threshold_mode: str = "percentile",
+        min_blob_voxels: int = 10,
+    ):
+        """
+        Signature:
+            __init__(
+                pdf_cache_path: Path, dataset_json_path: Path, seg_raw_dir: Path, 
+                img_raw_dir: Path, max_train_scans: int, force_rebuild: bool, 
+                threshold_mode: str, min_blob_voxels: int
+            ) -> None
+
+        Objective:
+            Initialize 3D empirical PDF baseline engine, loading or generating cached 3D heatmaps.
+
+        Inputs:
+            pdf_cache_path (Path): Path to .npz file containing cached 3D probability density maps.
+            dataset_json_path (Path): Path to dataset.json file.
+            seg_raw_dir (Path): Path to raw GT segmentations directory.
+            img_raw_dir (Path, optional): Path to raw CT images directory for anchoring. Defaults to RAW_IMAGES_DIR.
+            max_train_scans (int): Max training split scans to sample for PDF building. Default 300.
+            force_rebuild (bool): Whether to force rebuilding PDF heatmaps from scratch. Default False.
+            threshold_mode (str): Binarization strategy ('percentile' for Exp 001, 'quantile' for Exp 002).
+            min_blob_voxels (int): Minimum voxel threshold for 3D component noise pruning. Default 10.
+
+        Outputs:
+            None
+        """
+        if img_raw_dir is None:
+            from scripts.config import RAW_IMAGES_DIR
+            img_raw_dir = RAW_IMAGES_DIR
+
+        self.pdf_cache_path = Path(pdf_cache_path)
+        self.dataset_json_path = Path(dataset_json_path)
+        self.seg_raw_dir = Path(seg_raw_dir)
+        self.img_raw_dir = Path(img_raw_dir)
+        self.max_train_scans = max_train_scans
+        self.threshold_mode = threshold_mode
+        self.min_blob_voxels = min_blob_voxels
+        self.reader = NibabelIOWithReorient()
+
+        if force_rebuild or not self.pdf_cache_path.exists():
+            print(f"[INFO] Building 3D Empirical Spatial PDF Heatmaps from Train Split (max {self.max_train_scans} scans)...")
+            self.spatial_pdfs = self._build_pdf_cache()
+        else:
+            print(f"[INFO] Loading cached 3D Empirical Spatial PDF Heatmaps from {self.pdf_cache_path}...")
+            self.spatial_pdfs = self._load_pdf_cache()
+
+    def _build_pdf_cache(self) -> dict:
+        """
+        Signature:
+            _build_pdf_cache() -> dict
+
+        Objective:
+            Accumulate and average GT 3D segmentation masks per category across the training split
+            to generate 3D empirical spatial probability density heatmaps P_c(z, y, x).
+
+        Inputs:
+            None (Uses instance metadata paths and max_train_scans limit).
+
+        Outputs:
+            dict: Dictionary mapping 14 category codes ('1a'..'2h') to 3D numpy arrays of canonical shape.
+        """
+        # Step 1: Initialize cache directory, load dataset JSON metadata, and setup 3D accumulators
+        self.pdf_cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(self.dataset_json_path, 'r') as f:
+            metadata = json.load(f)
+
+        train_entries = metadata.get("train", [])
+        if not train_entries:
+            raise ValueError(f"No 'train' entries found in {self.dataset_json_path}")
+
+        if self.max_train_scans and len(train_entries) > self.max_train_scans:
+            train_entries = train_entries[:self.max_train_scans]
+
+        accumulators = {code: np.zeros(self.CANONICAL_SHAPE, dtype=np.float32) for code in CATEGORY_MAP.keys()}
+        category_counts = {code: 0 for code in CATEGORY_MAP.keys()}
+
+        print(f"[INFO] Processing {len(train_entries)} training scans for empirical PDF building...")
+
+        # Step 2: Iterate over training split entries and accumulate spatially aligned finding masks
+        for entry in tqdm(train_entries, desc="Building 3D PDF Heatmaps"):
+            # Extract unique scan identifier from entry metadata
+            scan_id = entry.get("name", "").replace(".nii.gz", "")
+            if not scan_id:
+                continue
+
+            # Verify existence of raw 4D ground-truth segmentation NIfTI file
+            seg_path = self.seg_raw_dir / f"{scan_id}.nii.gz"
+            if not seg_path.exists():
+                continue
+
+            # Ensure finding category mapping dictionary exists for this scan
+            categories_dict = entry.get("categories", {})
+            if not categories_dict:
+                continue
+
+            # Verify existence of parent 3D raw CT scan image (required for spatial anchoring)
+            img_path = self.img_raw_dir / f"{scan_id}.nii.gz"
+            if not img_path.exists():
+                tqdm.write(f"[WARNING] Missing raw image for anchoring: {img_path}")
+                continue
+
+            try:
+                # Step 3: Canonical RAS Spatial Anchoring — load CT image first to extract reference physical affine matrix, then load parent GT mask
+                _, img_nii, _ = load_nifti_ras(img_path)
+                gt_data, _, _ = load_nifti_ras(seg_path, ref_affine=img_nii.affine)
+
+                if gt_data.ndim == 4 and gt_data.shape[0] < np.min(gt_data.shape[1:4]):
+                    pass
+                elif gt_data.ndim == 4 and gt_data.shape[-1] < np.min(gt_data.shape[:3]):
+                    gt_data = np.moveaxis(gt_data, -1, 0)
+            except Exception as e:
+                tqdm.write(f"[WARNING] Failed to load GT mask {seg_path}: {e}")
+                continue
+
+            if gt_data.ndim == 3:
+                gt_data = np.expand_dims(gt_data, axis=0) # (1, X, Y, Z)
+
+            if gt_data.ndim == 4 and gt_data.shape[-1] < np.min(gt_data.shape[:3]):
+                gt_data = np.moveaxis(gt_data, -1, 0) # (F, X, Y, Z)
+
+            num_findings = gt_data.shape[0]
+
+            # Step 4: Extract per-finding binary mask and resample to canonical (512, 512, 512) grid via PyTorch interpolation
+            for f_idx in range(num_findings):
+                # Retrieve category code for finding index (e.g. '2d' for pulmonary nodules/masses)
+                cat_code = str(categories_dict.get(str(f_idx), ""))
+                if not cat_code or cat_code not in CATEGORY_MAP:
+                    continue
+
+                # Binarize 3D GT mask for current finding channel
+                binary_mask = (gt_data[f_idx] > 0).astype(np.float32)
+                if not binary_mask.any():
+                    continue
+
+                # PyTorch 3D Spatial Resampling to canonical (512, 512, 512) grid
+                mask_tensor = torch.from_numpy(binary_mask).unsqueeze(0).unsqueeze(0)
+                if mask_tensor.shape[2:] != self.CANONICAL_SHAPE:
+                    # GPU CUDA interpolation with CPU memory fallback
+                    if torch.cuda.is_available():
+                        try:
+                            mask_tensor_gpu = mask_tensor.cuda()
+                            mask_canonical = F.interpolate(mask_tensor_gpu, size=self.CANONICAL_SHAPE, mode='nearest').squeeze(0).squeeze(0).cpu().numpy()
+                            del mask_tensor_gpu
+                        except Exception:
+                            mask_canonical = F.interpolate(mask_tensor, size=self.CANONICAL_SHAPE, mode='nearest').squeeze(0).squeeze(0).numpy()
+                    else:
+                        mask_canonical = F.interpolate(mask_tensor, size=self.CANONICAL_SHAPE, mode='nearest').squeeze(0).squeeze(0).numpy()
+                else:
+                    mask_canonical = mask_tensor.squeeze(0).squeeze(0).numpy()
+
+                # Accumulate 3D voxel frequency count and increment category scan counter
+                accumulators[cat_code] += mask_canonical
+                category_counts[cat_code] += 1
+
+            # Free 4D GT volume memory and trigger garbage collection per scan loop
+            del gt_data
+            gc.collect()
+
+        # Step 5: Density Normalization & Compressed NPZ Caching — compute P_c(z, y, x) = accumulators / count and write NPZ archive
+        spatial_pdfs = {}
+        save_dict = {}
+        for code in CATEGORY_MAP.keys():
+            count = category_counts[code]
+            if count > 0:
+                pdf_np = accumulators[code] / float(count)
+                print(f"[INFO] Category '{code}' ({CATEGORY_MAP[code]}): Accumulated {count} training masks. Max PDF prob: {pdf_np.max():.4f}")
+            else:
+                print(f"[WARNING] Category '{code}' ({CATEGORY_MAP[code]}): 0 training masks found. Using uniform prior.")
+                pdf_np = np.full(self.CANONICAL_SHAPE, 0.01, dtype=np.float32)
+
+            spatial_pdfs[code] = pdf_np
+            save_dict[code] = pdf_np
+
+        np.savez_compressed(self.pdf_cache_path, **save_dict)
+        print(f"[SUCCESS] Saved 14-category 3D Spatial PDF Heatmaps to {self.pdf_cache_path}")
+        return spatial_pdfs
+
+    def _load_pdf_cache(self) -> dict:
+        """
+        Signature:
+            _load_pdf_cache() -> dict
+
+        Objective:
+            Load cached 3D Empirical Spatial PDF NPZ file from disk.
+
+        Inputs:
+            None (Uses instance self.pdf_cache_path).
+
+        Outputs:
+            dict: Dictionary mapping 14 category codes to 3D numpy arrays.
+        """
+        if not self.pdf_cache_path.exists():
+            raise FileNotFoundError(f"PDF cache file not found at {self.pdf_cache_path}")
+
+        npz_file = np.load(self.pdf_cache_path)
+        spatial_pdfs = {code: npz_file[code].astype(np.float32) for code in npz_file.files}
+        return spatial_pdfs
+
+    def generate_prediction_mask(self, cat_code: str, target_shape_ras: tuple) -> np.ndarray:
+        """
+        Signature:
+            generate_prediction_mask(cat_code: str, target_shape_ras: tuple) -> np.ndarray
+
+        Objective:
+            Generate a 3D binary segmentation mask for a target scan by resampling the 3D category PDF
+            heatmap to target_shape_ras and applying thresholding and component filtering.
+
+        Inputs:
+            cat_code (str): Category finding code ('1a'..'2h').
+            target_shape_ras (tuple): Target 3D volume shape (X, Y, Z).
+
+        Outputs:
+            np.ndarray: 3D uint8 binary prediction mask array with shape matching target_shape_ras.
+        """
+        code = str(cat_code) if str(cat_code) in CATEGORY_MAP else "2h"
+        pdf_np = self.spatial_pdfs.get(code, np.full(self.CANONICAL_SHAPE, 0.01, dtype=np.float32))
+
+        # 1. PyTorch 3D Spatial Resampling to target RAS volume shape
+        # GPU CUDA interpolation with CPU fallback if CUDA is unavailable or OOM
+        if target_shape_ras != self.CANONICAL_SHAPE:
+            pdf_tensor = torch.from_numpy(pdf_np).unsqueeze(0).unsqueeze(0)
+            if torch.cuda.is_available():
+                try:
+                    pdf_tensor_gpu = pdf_tensor.cuda()
+                    pdf_target = F.interpolate(pdf_tensor_gpu, size=target_shape_ras, mode='trilinear', align_corners=False).squeeze(0).squeeze(0).cpu().numpy()
+                    del pdf_tensor_gpu
+                except Exception:
+                    pdf_target = F.interpolate(pdf_tensor, size=target_shape_ras, mode='trilinear', align_corners=False).squeeze(0).squeeze(0).numpy()
+            else:
+                pdf_target = F.interpolate(pdf_tensor, size=target_shape_ras, mode='trilinear', align_corners=False).squeeze(0).squeeze(0).numpy()
+        else:
+            pdf_target = pdf_np.copy()
+
+        max_p = float(pdf_target.max())
+        if max_p <= 0:
+            return np.zeros(target_shape_ras, dtype=np.uint8)
+
+        # 2. Binarization Strategy Selection
+        if self.threshold_mode == "quantile":
+            # Exp 002: Empirical Volume Quantile Matching Strategy
+            # Select top K voxels corresponding to Phase 1 expected category volume ratio
+            target_ratio = EMPIRICAL_VOLUME_QUANTILES.get(code, 0.005)
+            # Compute probability cutoff value at (1 - target_ratio) quantile
+            cutoff = float(np.quantile(pdf_target, 1.0 - target_ratio))
+            if cutoff <= 0:
+                cutoff = 0.5 * max_p
+            binary_mask = (pdf_target >= cutoff).astype(np.uint8)
+        else:
+            # Exp 001: Percentile Factor Scaling Strategy
+            factor = CATEGORY_THRESHOLD_FACTORS.get(code, 0.40)
+            p_threshold = factor * max_p
+            binary_mask = (pdf_target >= p_threshold).astype(np.uint8)
+
+        # 3. 3D Connected Component Size Cleanup (Noise Blob Pruning)
+        if binary_mask.any() and self.min_blob_voxels > 0:
+            labeled, num_features = label(binary_mask)
+            if num_features > 0:
+                sizes = np.bincount(labeled.ravel())
+                too_small = sizes < self.min_blob_voxels
+                binary_mask[too_small[labeled]] = 0
+
+        return binary_mask.astype(np.uint8)

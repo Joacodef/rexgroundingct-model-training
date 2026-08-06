@@ -156,7 +156,7 @@ def main():
         img_path = os.path.join(IMG_DIR, entry["name"])
         seg_path = os.path.join(SEG_DIR, entry["name"])
         
-        # Robust check: Ensure both raw files exist before adding to MONAI pipeline
+        # File existence check: Ensure both raw files exist before adding to MONAI pipeline
         if not os.path.exists(img_path) or not os.path.exists(seg_path):
             logger.warning(f"Missing raw files for {entry['name']}. Skipping.")
             missing_cases += 1

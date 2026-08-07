@@ -29,28 +29,11 @@ if str(ROOT_DIR) not in sys.path:
 from scripts.config import CATEGORY_MAP
 from nnunetv2.imageio.nibabel_reader_writer import NibabelIOWithReorient
 from scripts.common.orientation import load_nifti_ras
+from scripts.common.nlp_locators import generate_text_spatial_mask, parse_prompt_spatial_locators
 
 
-# Calibrated category threshold factors for Exp 001 (p_c = factor * max_p).
-# DERIVATION: Derived from Phase 1 empirical cumulative density profiling and morphological sphericity.
-CATEGORY_THRESHOLD_FACTORS = {
-    "1a": 0.35,  # Bronchial wall thickening (hilar/peribronchial)
-    "1b": 0.40,  # Bronchiectasis (airway tree)
-    "1c": 0.40,  # Emphysema (apical dominant)
-    "1d": 0.40,  # Septal thickening (interstitial)
-    "1e": 0.50,  # Micronodules (multi-focal clusters)
-    "1f": 0.40,  # Other non-focal
-    "2a": 0.50,  # Linear opacities (focal linear)
-    "2b": 0.35,  # Atelectasis / consolidation (basal dependent)
-    "2c": 0.35,  # Ground-glass opacity (patchy parenchymal)
-    "2d": 0.50,  # Pulmonary nodules / masses (focal spherical, S=0.94)
-    "2e": 0.30,  # Pleural effusion / thickening (basal dependent fluid)
-    "2f": 0.40,  # Honeycombing (subpleural basal)
-    "2g": 0.35,  # Pneumothorax (pleural boundary)
-    "2h": 0.40,  # Other focal
-}
 
-# Empirical Mean Volume Quantile Ratios for Exp 002 (Target V_pred / V_scan).
+# Empirical Mean Volume Quantile Ratios (Target V_pred / V_scan).
 # DERIVATION: Derived directly from Phase 1 ground-truth lesion volume statistics (PHASE_1_DATA_ANALYSIS_SUMMARY.md).
 EMPIRICAL_VOLUME_QUANTILES = {
     "1a": 0.005,  # Bronchial wall thickening (~0.5% volume)
@@ -69,7 +52,7 @@ EMPIRICAL_VOLUME_QUANTILES = {
     "2h": 0.005,  # Other focal (~0.5% volume)
 }
 
-# Empirical 5th-95th percentile Hounsfield Unit (HU) radiodensity bounds per category for Exp 003.
+# Empirical 5th-95th percentile Hounsfield Unit (HU) radiodensity bounds per category.
 # DERIVATION: Derived from Phase 1 empirical attenuation profiling (PHASE_1_DATA_ANALYSIS_SUMMARY.md).
 CATEGORY_HU_BOUNDS = {
     "1a": (-933.0, 69.0),   # Bronchial wall thickening (airway + peribronchial soft tissue)
@@ -306,20 +289,29 @@ class EmpiricalSpatialPDFBaseline:
         spatial_pdfs = {code: npz_file[code].astype(np.float32) for code in npz_file.files}
         return spatial_pdfs
 
-    def generate_prediction_mask(self, cat_code: str, target_shape_ras: tuple, ct_img_ras: np.ndarray = None) -> np.ndarray:
+    def generate_prediction_mask(
+        self,
+        cat_code: str,
+        target_shape_ras: tuple,
+        ct_img_ras: np.ndarray = None,
+        prompt_text: str = None,
+    ) -> np.ndarray:
         """
         Signature:
-            generate_prediction_mask(cat_code: str, target_shape_ras: tuple, ct_img_ras: np.ndarray = None) -> np.ndarray
+            generate_prediction_mask(
+                cat_code: str, target_shape_ras: tuple, ct_img_ras: np.ndarray = None, prompt_text: str = None
+            ) -> np.ndarray
 
         Objective:
             Generate a 3D binary segmentation mask for a target scan by resampling the 3D category PDF
-            heatmap to target_shape_ras, applying HU radiodensity windowing (if ct_img_ras is provided),
-            and performing thresholding and component filtering.
+            heatmap to target_shape_ras, applying text prompt spatial locator masking (if prompt_text is provided),
+            HU radiodensity windowing (if ct_img_ras is provided), and thresholding / component filtering.
 
         Inputs:
             cat_code (str): Category finding code ('1a'..'2h').
             target_shape_ras (tuple): Target 3D volume shape (X, Y, Z).
-            ct_img_ras (np.ndarray, optional): Raw CT HU intensity volume array with shape matching target_shape_ras.
+            ct_img_ras (np.ndarray, optional): Raw CT HU intensity volume array matching target_shape_ras.
+            prompt_text (str, optional): Free-text radiology finding description string.
 
         Outputs:
             np.ndarray: 3D uint8 binary prediction mask array with shape matching target_shape_ras.
@@ -343,21 +335,24 @@ class EmpiricalSpatialPDFBaseline:
         else:
             pdf_target = pdf_np.copy()
 
-        # 1.5 Radiodensity HU Intensity Filtering (Exp 003 / Exp 004 / Exp 005)
+        # 1.2 NLP Text Prompt Spatial Locator Gating (Exp 007)
+        if self.threshold_mode == "text_spatial_locators" and prompt_text:
+            text_roi_mask = generate_text_spatial_mask(prompt_text, target_shape_ras)
+            pdf_target = pdf_target * text_roi_mask
+
+        # 1.5 Radiodensity HU Intensity Filtering (Exp 003 / Exp 004 / Exp 005 / Exp 006 / Exp 007)
         if ct_img_ras is not None and isinstance(ct_img_ras, np.ndarray) and ct_img_ras.shape == target_shape_ras:
-            if self.threshold_mode == "body_gated_hu":
-                # Exp 005: Body Cavity Air Masking (HU in [-1000, 1000] HU) + Selective HU Windowing
-                # Step 1: Suppress room air / outside-body background (HU < -1000 or HU > 1000)
+            if self.threshold_mode in ("body_gated_hu", "composite_rules"):
+                # Exp 005 & Exp 006: Body Cavity Air Masking (HU in [-1000, 1000] HU) + Selective HU Windowing
                 body_mask = (ct_img_ras >= -1000.0) & (ct_img_ras <= 1000.0)
                 pdf_target[~body_mask] = 0.0
 
-                # Step 2: Apply selective HU bounds for structural airway/air pathologies
                 SELECTIVE_HU_CATEGORIES = {'1a', '1b', '1c', '2f', '2g'}
                 if code in SELECTIVE_HU_CATEGORIES:
                     min_hu, max_hu = CATEGORY_HU_BOUNDS.get(code, (-1000.0, 300.0))
                     invalid_hu = (ct_img_ras < min_hu) | (ct_img_ras > max_hu)
                     pdf_target[invalid_hu] = 0.0
-            elif self.threshold_mode == "selective_hu":
+            elif self.threshold_mode in ("selective_hu", "text_spatial_locators"):
                 SELECTIVE_HU_CATEGORIES = {'1a', '1b', '1c', '2f', '2g'}
                 if code in SELECTIVE_HU_CATEGORIES:
                     min_hu, max_hu = CATEGORY_HU_BOUNDS.get(code, (-1000.0, 300.0))
@@ -373,27 +368,39 @@ class EmpiricalSpatialPDFBaseline:
             return np.zeros(target_shape_ras, dtype=np.uint8)
 
         # 2. Binarization Strategy Selection
-        if self.threshold_mode in ("quantile", "hu_quantile", "selective_hu", "body_gated_hu"):
-            # Exp 002, Exp 003, Exp 004 & Exp 005: Empirical Volume Quantile Matching Strategy
-            # Select top K voxels corresponding to Phase 1 expected category volume ratio
+        if self.threshold_mode == "composite_rules":
+            # Exp 006: Composite Rules with Validation Density Scaling (1.5x target ratio)
+            target_ratio = EMPIRICAL_VOLUME_QUANTILES.get(code, 0.005) * 1.5
+            cutoff = float(np.quantile(pdf_target, 1.0 - target_ratio))
+            if cutoff <= 0:
+                cutoff = 0.5 * max_p
+            binary_mask = (pdf_target >= cutoff).astype(np.uint8)
+        elif self.threshold_mode in ("quantile", "hu_quantile", "selective_hu", "body_gated_hu", "text_spatial_locators"):
+            # Exp 002, Exp 003, Exp 004, Exp 005 & Exp 007: Empirical Volume Quantile Matching Strategy
             target_ratio = EMPIRICAL_VOLUME_QUANTILES.get(code, 0.005)
-            # Compute probability cutoff value at (1 - target_ratio) quantile
             cutoff = float(np.quantile(pdf_target, 1.0 - target_ratio))
             if cutoff <= 0:
                 cutoff = 0.5 * max_p
             binary_mask = (pdf_target >= cutoff).astype(np.uint8)
         else:
             # Exp 001: Percentile Factor Scaling Strategy
-            factor = CATEGORY_THRESHOLD_FACTORS.get(code, 0.40)
+            factor = self.threshold_factors.get(code, 0.40) if hasattr(self, 'threshold_factors') and isinstance(self.threshold_factors, dict) else 0.40
             p_threshold = factor * max_p
             binary_mask = (pdf_target >= p_threshold).astype(np.uint8)
 
         # 3. 3D Connected Component Size Cleanup (Noise Blob Pruning)
-        if binary_mask.any() and self.min_blob_voxels > 0:
+        if isinstance(self.min_blob_voxels, dict):
+            effective_min_blob = self.min_blob_voxels.get(code, 10)
+        else:
+            effective_min_blob = self.min_blob_voxels
+
+        if binary_mask.any() and effective_min_blob > 0:
             labeled, num_features = label(binary_mask)
             if num_features > 0:
                 sizes = np.bincount(labeled.ravel())
-                too_small = sizes < self.min_blob_voxels
+                too_small = sizes < effective_min_blob
                 binary_mask[too_small[labeled]] = 0
 
+
         return binary_mask.astype(np.uint8)
+

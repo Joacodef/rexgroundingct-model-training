@@ -375,6 +375,41 @@ def test_generate_prediction_mask_hu_windowing(tmp_path: Path):
     assert np.all(pred_mask[:, :, 16:] == 0)
 
 
+def test_generate_prediction_mask_body_gated_hu(tmp_path: Path):
+    """
+    Signature:
+        test_generate_prediction_mask_body_gated_hu(tmp_path: Path) -> None
+
+    Objective:
+        Verify generate_prediction_mask zeroes out room air (HU < -1000) and high density (> 1000) in body_gated_hu mode.
+    """
+    cache_file = tmp_path / "body_gated_test_cache.npz"
+    grid = np.ones((32, 32, 32), dtype=np.float32)
+    np.savez_compressed(cache_file, **{"1c": grid, "2e": grid})
+
+    engine = EmpiricalSpatialPDFBaseline(
+        pdf_cache_path=cache_file,
+        dataset_json_path=tmp_path / "dataset.json",
+        seg_raw_dir=tmp_path / "raw_masks",
+        force_rebuild=False,
+        threshold_mode="body_gated_hu",
+    )
+
+    # Synthetic CT image:
+    # Region 1 (Z < 10): Room Air (HU = -1024) -> Must be zeroed out
+    # Region 2 (10 <= Z < 20): Lung/Soft Tissue (HU = -500) -> Valid for 1c and 2e
+    # Region 3 (Z >= 20): High density / Bone (HU = 1500) -> Must be zeroed out by body gating
+    ct_img = np.full((32, 32, 32), -500.0, dtype=np.float32)
+    ct_img[:, :, :10] = -1024.0
+    ct_img[:, :, 20:] = 1500.0
+
+    pred_mask = engine.generate_prediction_mask(cat_code="2e", target_shape_ras=(32, 32, 32), ct_img_ras=ct_img)
+    assert pred_mask.shape == (32, 32, 32)
+    assert np.all(pred_mask[:, :, :10] == 0), "Room air region (< -1000 HU) was not zeroed out"
+    assert np.all(pred_mask[:, :, 20:] == 0), "Outside body high HU region (> 1000 HU) was not zeroed out"
+    assert np.any(pred_mask[:, :, 10:20] == 1), "Body interior region was incorrectly zeroed out"
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("      RUNNING EMPIRICAL SPATIAL PDF BASELINE ENGINE TEST SUITE")
@@ -390,6 +425,7 @@ if __name__ == "__main__":
         test_generate_prediction_mask_unknown_category_fallback,
         test_generate_prediction_mask_all_zero_pdf,
         test_generate_prediction_mask_hu_windowing,
+        test_generate_prediction_mask_body_gated_hu,
     ]
 
     passed = 0

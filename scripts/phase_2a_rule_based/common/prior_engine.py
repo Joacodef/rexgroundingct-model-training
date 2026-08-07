@@ -343,19 +343,38 @@ class EmpiricalSpatialPDFBaseline:
         else:
             pdf_target = pdf_np.copy()
 
-        # 1.5 Radiodensity HU Intensity Filtering (Exp 003)
+        # 1.5 Radiodensity HU Intensity Filtering (Exp 003 / Exp 004 / Exp 005)
         if ct_img_ras is not None and isinstance(ct_img_ras, np.ndarray) and ct_img_ras.shape == target_shape_ras:
-            min_hu, max_hu = CATEGORY_HU_BOUNDS.get(code, (-1000.0, 300.0))
-            invalid_hu = (ct_img_ras < min_hu) | (ct_img_ras > max_hu)
-            pdf_target[invalid_hu] = 0.0
+            if self.threshold_mode == "body_gated_hu":
+                # Exp 005: Body Cavity Air Masking (HU in [-1000, 1000] HU) + Selective HU Windowing
+                # Step 1: Suppress room air / outside-body background (HU < -1000 or HU > 1000)
+                body_mask = (ct_img_ras >= -1000.0) & (ct_img_ras <= 1000.0)
+                pdf_target[~body_mask] = 0.0
+
+                # Step 2: Apply selective HU bounds for structural airway/air pathologies
+                SELECTIVE_HU_CATEGORIES = {'1a', '1b', '1c', '2f', '2g'}
+                if code in SELECTIVE_HU_CATEGORIES:
+                    min_hu, max_hu = CATEGORY_HU_BOUNDS.get(code, (-1000.0, 300.0))
+                    invalid_hu = (ct_img_ras < min_hu) | (ct_img_ras > max_hu)
+                    pdf_target[invalid_hu] = 0.0
+            elif self.threshold_mode == "selective_hu":
+                SELECTIVE_HU_CATEGORIES = {'1a', '1b', '1c', '2f', '2g'}
+                if code in SELECTIVE_HU_CATEGORIES:
+                    min_hu, max_hu = CATEGORY_HU_BOUNDS.get(code, (-1000.0, 300.0))
+                    invalid_hu = (ct_img_ras < min_hu) | (ct_img_ras > max_hu)
+                    pdf_target[invalid_hu] = 0.0
+            elif self.threshold_mode in ("hu_windowed", "hu_quantile"):
+                min_hu, max_hu = CATEGORY_HU_BOUNDS.get(code, (-1000.0, 300.0))
+                invalid_hu = (ct_img_ras < min_hu) | (ct_img_ras > max_hu)
+                pdf_target[invalid_hu] = 0.0
 
         max_p = float(pdf_target.max())
         if max_p <= 0:
             return np.zeros(target_shape_ras, dtype=np.uint8)
 
         # 2. Binarization Strategy Selection
-        if self.threshold_mode in ("quantile", "hu_quantile"):
-            # Exp 002 & Exp 003: Empirical Volume Quantile Matching Strategy
+        if self.threshold_mode in ("quantile", "hu_quantile", "selective_hu", "body_gated_hu"):
+            # Exp 002, Exp 003, Exp 004 & Exp 005: Empirical Volume Quantile Matching Strategy
             # Select top K voxels corresponding to Phase 1 expected category volume ratio
             target_ratio = EMPIRICAL_VOLUME_QUANTILES.get(code, 0.005)
             # Compute probability cutoff value at (1 - target_ratio) quantile

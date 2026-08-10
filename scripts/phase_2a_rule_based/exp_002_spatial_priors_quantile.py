@@ -5,7 +5,7 @@ PHASE:          Phase 2A — Statistical / Rule-Based Prior Baseline
 LOCATION:       scripts/phase_2a_rule_based/exp_002_spatial_priors_quantile.py
 OBJECTIVE:      Single-file executable pipeline for Phase 2A Exp 002.
                 1. Checks/builds spatially-anchored 3D empirical PDF heatmaps (ref_affine=img_nii.affine).
-                2. Applies Empirical Volume Quantile Matching (binarizing at top K voxels matching Phase 1 pathology scale).
+                2. Applies Empirical Volume Quantile Matching (binarizing at percentile threshold matching Phase 1 pathology scale).
                 3. Resamples predictions to target scan shapes, stacks 4D NIfTI masks (F, X, Y, Z).
                 4. Runs automated challenge metric evaluation (Dice, Hit Rate @ 0.1, Centroid Error).
 USAGE:          python scripts/phase_2a_rule_based/exp_002_spatial_priors_quantile.py --split val --eval

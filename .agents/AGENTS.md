@@ -61,6 +61,7 @@ You MUST always run persistent tasks in one of the following ways:
 * **Git Commit & Push Approval Protocol**: NEVER execute `git commit` or `git push` automatically. You MUST always ask the USER for explicit permission before staging, committing, or pushing code or documentation changes.
 * **Relative Path Directive**: ALL documentation, markdown files, and codebase scripts MUST strictly use **relative paths** (e.g., `scripts/phase_2b_voxtell/exp_001_voxtell_inference.py`).
 * **Master Plan Abstraction Directive**: The master plan (`.agents/shared/MASTER_PLAN.md`) MUST be maintained strictly as a big-picture, high-level scientific and technical roadmap. It MUST NOT contain references to specific file paths, script names, or implementation conventions (which belong exclusively in `AGENTS.md` or `README.md`).
+* **UI Formatting & Math Directive**: The chat window renders standard GitHub Markdown (headers, lists, bold text, code blocks) cleanly, but raw LaTeX delimiters (`$...$`, `$$...$$`, `\(...\)`) are not rendered. All mathematical expressions in chat responses MUST be formatted using standard Markdown, code blocks, or clean Unicode characters (e.g., `ΔHU`, `θ`, `≥`, `≤`) instead of raw LaTeX.
 
 ---
 

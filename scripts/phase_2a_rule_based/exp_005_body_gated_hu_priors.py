@@ -8,7 +8,7 @@ OBJECTIVE:      Single-file executable pipeline for Phase 2A Exp 005.
                 2. Applies Body Cavity Air Masking (HU in [-1000, 1000] HU) to eliminate outside-body room air false positives.
                 3. Applies Selective HU Radiodensity Windowing (gating HU bounds ONLY for structural 
                    airway/air pathologies '1a', '1b', '1c', '2f', '2g', bypassing for fluid/diffuse '2e', '2c', '1d').
-                4. Applies Empirical Volume Quantile Matching (binarizing at top K voxels matching Phase 1 pathology scale).
+                4. Applies Empirical Volume Quantile Matching (binarizing at percentile threshold matching Phase 1 pathology scale).
                 5. Resamples predictions to target scan shapes, stacks 4D NIfTI masks (F, X, Y, Z).
                 6. Runs automated challenge metric evaluation (Dice, Hit Rate @ 0.1, Centroid Error).
 USAGE:          python scripts/phase_2a_rule_based/exp_005_body_gated_hu_priors.py --split val --eval

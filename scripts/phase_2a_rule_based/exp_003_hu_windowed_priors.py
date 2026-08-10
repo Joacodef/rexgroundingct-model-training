@@ -6,7 +6,7 @@ LOCATION:       scripts/phase_2a_rule_based/exp_003_hu_windowed_priors.py
 OBJECTIVE:      Single-file executable pipeline for Phase 2A Exp 003 (Hypothesis H1).
                 1. Checks/builds spatially-anchored 3D empirical PDF heatmaps (ref_affine=img_nii.affine).
                 2. Applies Hounsfield Unit (HU) Radiodensity Attenuation Windowing (masking out voxels outside category 5th-95th percentiles).
-                3. Applies Empirical Volume Quantile Matching (binarizing at top K voxels matching Phase 1 pathology scale).
+                3. Applies Empirical Volume Quantile Matching (binarizing at percentile threshold matching Phase 1 pathology scale).
                 4. Resamples predictions to target scan shapes, stacks 4D NIfTI masks (F, X, Y, Z).
                 5. Runs automated challenge metric evaluation (Dice, Hit Rate @ 0.1, Centroid Error).
 USAGE:          python scripts/phase_2a_rule_based/exp_003_hu_windowed_priors.py --split val --eval

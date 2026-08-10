@@ -95,6 +95,10 @@ def run_prior_inference_and_eval(
             continue
 
         out_nii_path = output_dir / f"{scan_id}.nii.gz"
+        if out_nii_path.exists():
+            generated_count += 1
+            continue
+
         raw_nifti_path = img_raw_dir / f"{scan_id}.nii.gz"
         if not raw_nifti_path.exists():
             tqdm.write(f"[WARNING] Raw image missing: {raw_nifti_path}")

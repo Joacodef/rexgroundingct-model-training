@@ -1,10 +1,10 @@
 # Official Rules: ReXGroundingCT Challenge @ MICCAI 2026
 
-> Structured transcript of the official rules published at `https://rexrank.ai/ReXGroundingCT/challenge.html`, the dataset overview at `https://rexrank.ai/ReXGroundingCT/index.html`, submission guidelines at `https://rexrank.ai/explore/submission_guideline_ct.html`, and arXiv preprint `arXiv:2507.22030`. Last verified: July 23, 2026. In case of any discrepancy with official pages, the official page takes precedence.
+> Structured transcript of the official rules published at `https://rexrank.ai/ReXGroundingCT/challenge.html`, the dataset overview at `https://rexrank.ai/ReXGroundingCT/index.html`, submission guidelines at `https://rexrank.ai/explore/submission_guideline_ct.html`, arXiv preprint `arXiv:2507.22030`, and official organizer communications (M. Baharoon). Last updated: August 9, 2026. In case of any discrepancy with official pages, the official page takes precedence.
 
 ---
 
-## 1. About the Challenge
+## 1. About the Challenge & Official Tracks
 
 The ReXGrounding Challenge is an official MICCAI 2026 challenge designed to evaluate models on the localization of radiological findings described in unrestricted natural language, producing precise 3D segmentation masks in volumetric thoracic CTs.
 
@@ -13,6 +13,20 @@ Unlike previous challenges focused on lesion or organ segmentation by predefined
 The challenge is built on CT-RATE (a large-scale dataset of non-contrast thoracic CTs paired with free-text radiology reports), extended with expert-verified pixel-level 3D segmentations corresponding to individual findings from the reports.
 
 Host: public leaderboard at `https://rexrank.ai/ReXGroundingCT/challenge.html`.
+
+### The Two Official Competition Tracks
+
+The challenge is structured into **two distinct tracks**, each with a separate set of 3 winners:
+
+1. **Track 1 — Main Track: Free-Text Grounding**
+   - **Requirement**: Methods must consume the exact free-text finding description as provided, conditioning segmentation directly on that text (e.g. as a text embedding).
+   - **Constraint**: The raw free-text prompt MUST NOT be rewritten or parsed into a structured representation before reaching the model.
+   - **Goal**: Evaluates flexible, end-to-end models that natively ground free-text radiology findings.
+
+2. **Track 2 — Overall Track: Free-Text & Structured**
+   - **Scope**: General track admitting both native free-text methods and methods that transform free-text findings into structured representations (e.g. parsing location, morphology, or size via an LLM or NLP text parser) prior to conditioning.
+   - **Constraint**: Prompts cannot simply be reduced to a fixed class label (e.g., just "nodule"); models must take in spatial/descriptive context to differentiate separate findings in distinct locations.
+   - **Automatic Dual Eligibility**: Every eligible Main Track submission is automatically evaluated for the Overall Track. A strong free-text method can win in both tracks simultaneously.
 
 ---
 
@@ -77,14 +91,14 @@ The authors provide a complementary **Chain-of-Thought (CoT) reasoning dataset**
 
 ---
 
-## 4. Timeline
+## 4. Timeline & Deadlines
 
 | Date | Milestone |
 |---|---|
 | Pre-registration | Pre-registration open. Training data publicly available. |
 | June 2026 | Challenge launch: registration opens, validation set (200) released. |
-| June — September 2026 | Development phase: evaluate on val set, submit multiple runs. |
-| September 2026 | Submission deadline. Final evaluation on held-out test set. |
+| June — September 2026 | Development phase: evaluate on val set, submit multiple test runs. |
+| **September 14, 2026 (11:59 PM ET)** | **Official Submission Deadline** for final test set rankings. |
 | Late September 2026 | Results announced and challenge session at MICCAI 2026. |
 
 ---
@@ -107,41 +121,25 @@ The authors provide a complementary **Chain-of-Thought (CoT) reasoning dataset**
 | Distance Recall | No (Detailed Breakdown) | TP / (TP + FN), with same distance criterion |
 | Distance F1 | No (Detailed Breakdown) | Harmonic mean of Distance Precision and Distance Recall |
 
-### Public Leaderboard Display & Category Breakdown
-* The main leaderboard table displays **Dice** (bolded primary metric), **Hit Rate**, and **Instance F1**.
-* Clicking any submission row on `rexrank.ai` reveals an interactive per-category metric breakdown across all 14 finding classes.
-
-### Important Note on Hit Rate Threshold
-The official challenge Hit Rate uses **Dice $\ge 0.1$** as the matching threshold. The VoxTell paper reports $HIT_{5\%}$ (threshold 0.05), which is different. Local evaluation loops in `scripts/common/evaluate.py` enforce the official 0.1 threshold.
+### Public Leaderboard & Fast Evaluator
+* **Public Standings**: Live standings are computed on a fixed **public 50% subset** of the 300 test scans. The remaining 50% private test set determines final rankings.
+* **Evaluator Processing Speed**: The backend evaluator is optimized (~20x faster), publishing scores to the public leaderboard within **~2 hours** of zip submission on `rexrank.ai`.
 
 ---
 
-## 6. Participation Rules
+## 6. Permitted vs. Disqualified Techniques
 
-1. **Pre-registration** via the official registration panel on `rexrank.ai`.
-2. **Training data availability**: Method development and local benchmarking can proceed using available training and validation splits.
-3. **External data permitted**: Any public or private training data, including pre-trained foundation models and external datasets, may be used. All external data sources must be declared in the final submission report.
-4. **Fully automatic predictions**: All predictions on the test set must be generated automatically. Prohibited actions include:
-   - Manual intervention or human mask editing.
-   - Post-hoc manual threshold tuning per case.
-   - Non-reproducible case-specific heuristics.
-5. **Multiple submissions during development phase**: Teams may submit multiple runs to evaluate on the test split. Only the single best submission per team is officially ranked on the leaderboard.
+### Permitted in Both Tracks
+1. **Auxiliary Category Information**: Using finding categories (either passed directly or inferred via prompt classifier) as auxiliary input signals is permitted in both Track 1 and Track 2. (In Track 1, the raw free-text prompt must still be directly consumed).
+2. **Anatomical Segmentations**: Incorporating organ/anatomical segmentations (e.g. lung lobes, pleura, airways) as extra input channels or spatial bounding constraints is fully permitted.
+3. **Anatomical Post-Processing**: Restricting predicted masks to anatomical sub-regions specified in the text prompt (e.g., spatial locator masking) is fully permitted.
 
----
-
-## 7. Awards and Publication
-
-- The top 3 teams receive:
-  - Official MICCAI award certificates.
-  - Invited oral / spotlight presentation at the MICCAI 2026 challenge session.
-  - Recognition on the public leaderboard.
-  - Recognition and co-authorship in the post-challenge overview paper.
-- **Co-authorship in the challenge publication**: Members of top-3 teams qualify, up to 8 authors per team.
-- **No embargo period**: Participating teams retain full rights to publish their methods and results independently without time restrictions.
+### Strictly Out of Scope & Disqualified
+* **Fixed-Category Class Segmentation**: Models that output fixed class masks and select target categories solely by label (ignoring text descriptors and failing to separate two distinct instances in different locations) are **strictly disqualified**.
 
 ---
 
-## 8. Technical Submission Process
+## 7. Technical Submission Process
 
 ### Prediction Format & Packaging
 1. Run inference on the ReXGroundingCT test set (300 scans).
@@ -149,80 +147,27 @@ The official challenge Hit Rate uses **Dice $\ge 0.1$** as the matching threshol
 3. Each prediction file must have 4D shape `(F, H, W, D)`, where:
    - `F` = number of findings for that scan (matching the exact order in `dataset.json`).
    - `H, W, D` = spatial dimensions matching ground truth.
-4. Compress all 300 prediction NIfTI files into a **single `.zip` file** (do not compress a wrapper folder).
+4. Compress all 300 prediction NIfTI files into a **single `.zip` file** (do NOT compress a wrapper folder; files must sit at root).
 
 ### Web Submission Portal Workflow
 Submissions are managed exclusively via the web portal at `https://rexrank.ai/ReXGroundingCT/challenge.html`:
-
-1. **Account Setup**: Log in or create an account on `rexrank.ai` (requires email verification; password min 6 characters). Note: Check spam/junk folders for verification emails.
-2. **Team Registration**: Register team name, contact email, and member list (each member must provide **Full Name** and **Affiliation**, max 8 members).
-3. **Google Drive File Upload**: Upload the single prediction `.zip` file to Google Drive and set sharing permissions to *"Anyone with the link can view"*.
-4. **Form Submission**: Select target split (`test`), enter **Model Name** (required), and provide the shareable Google Drive URL.
+1. **Account Setup & Registration**: Log in on `rexrank.ai`, register team name, and list team members (Full Name + Affiliation, max 8 members).
+2. **Google Drive Upload**: Upload prediction `.zip` file to Google Drive and set permission to *"Anyone with the link can view"*.
+3. **Submit**: Enter Model Name, target split (`test`), and shareable Google Drive URL.
 
 ---
 
-## 9. Public vs. Private Leaderboard Rules
+## 8. Awards and Co-authorship
 
-* **Public Standings (50% Test Set)**: Live standings on the public leaderboard are calculated on a randomly selected **public 50% subset** of the 300 held-out test scans.
-* **Private Final Ranking (100% Test Set)**: The remaining **50% subset is withheld**. Final challenge placement is evaluated on the complete 100% test set and will be revealed at MICCAI 2026.
-* **Best Run Ranking**: Each team is ranked by their single best submission score.
-
----
-
-## 10. Organizers
-
-- Mohammed Baharoon — Harvard Medical School, USA (primary contact)
-- Pranav Rajpurkar — Harvard Medical School, USA
-- Luyang Luo — Harvard Medical School, USA
-- Xiaoman Zhang — Harvard Medical School, USA
-- Mahmoud Hussain Alabbad — King Fahad Hospital, Saudi Arabia
-- Sungeun Kim — Harvard Medical School, USA
-
-General challenge contact: `MohammedSalimAB@outlook.com`
+- Top 3 teams in each track receive official MICCAI awards and invited presentations.
+- Up to 8 members per top-3 team qualify for co-authorship on the post-challenge MICCAI overview paper.
+- No embargo period: teams retain full rights to publish independently.
 
 ---
 
-## 11. Official Resources
+## 9. Critical Operational Implications
 
-- Leaderboard & Submission Portal: `https://rexrank.ai/ReXGroundingCT/challenge.html`
-- Dataset Overview: `https://rexrank.ai/ReXGroundingCT/index.html`
-- Submission Guidelines: `https://rexrank.ai/explore/submission_guideline_ct.html`
-- Dataset on HuggingFace: `https://huggingface.co/datasets/rajpurkarlab/ReXGroundingCT`
-- Official Evaluation Script: `https://huggingface.co/datasets/rajpurkarlab/ReXGroundingCT/blob/main/rexrank_eval.py`
-- ReXGroundingCT Paper: `https://arxiv.org/abs/2507.22030`
-
----
-
-## 12. Official Citations
-
-**ReXGroundingCT:**
-```bibtex
-@article{baharoon2025rexgroundingct,
-  title={ReXGroundingCT: A 3D Chest CT Dataset for Segmentation of Findings from Free-Text Reports},
-  author={Baharoon, Mohammed and Luo, Luyang and Moritz, Michael and Kumar, Abhinav and Kim, Sung Eun and Zhang, Xiaoman and Zhu, Miao and Alabbad, Mahmoud Hussain and Alhazmi, Maha Sbayel and Mistry, Neel P and others},
-  journal={arXiv preprint arXiv:2507.22030},
-  year={2025}
-}
-```
-
-**CT-RATE:**
-```bibtex
-@article{hamamci2026generalist,
-  title={Generalist foundation models from a multimodal dataset for 3D computed tomography},
-  author={Hamamci, Ibrahim Ethem and Er, Sezgin and Wang, Chenyu and Almas, Furkan and Simsek, Ayse Gulnihan and Esirgun, Sevval Nil and Dogan, Irem and Durugol, Omer Faruk and Hou, Benjamin and Shit, Suprosanna and others},
-  journal={Nature Biomedical Engineering},
-  pages={1--19},
-  year={2026},
-  publisher={Nature Publishing Group UK London}
-}
-```
-
----
-
-## 13. Critical Operational Implications
-
-1. **50% Public / 50% Private Leaderboard Split**: Leaderboard scores reflect only half the test set. Overfitting to the public 50% risks performance degradation on the final private evaluation. Solid local cross-validation is essential.
-2. **Chain-of-Thought (CoT) Prompting Leverage**: The availability of GPT-4o-generated CoT reasoning traces anchored to anatomical coordinates provides an additional textual grounding mechanism to experiment with during baseline fine-tuning.
-3. **Output Format (F, H, W, D)**: Predictions must stack individual 3D finding segmentations into a single 4D volume per CT scan, maintaining exact correspondence with the GT finding sequence. Verify local outputs using `scripts/common/evaluate.py`.
-4. **Google Drive Submission Portal**: Predictions are submitted via a shared Google Drive link in the web portal. Form fields require a designated Model Name and verified team members (Name + Affiliation).
-5. **Co-authorship Limit**: Top-3 placement qualifies up to 8 team members for co-authorship on the official MICCAI challenge paper.
+1. **Submission Deadline**: **September 14, 2026 at 11:59 PM ET**.
+2. **Track Alignment**: Main Track requires direct text embedding input of the raw prompt. Categorical and anatomical locators can be added as auxiliary inputs.
+3. **Flat Zip Structure**: `.nii.gz` files must be at the root of the `.zip` archive.
+4. **50% Public / 50% Private Leaderboard**: Standings evaluate 50% public test scans live; private 50% determines final MICCAI ranking.

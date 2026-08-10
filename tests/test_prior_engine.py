@@ -490,6 +490,62 @@ def test_generate_prediction_mask_text_spatial_locators(tmp_path: Path):
     assert np.all(pred_mask[18:, :, :] == 0), "Right side was not zeroed out for 'left' prompt"
 
 
+def test_exp008_local_contrast_edge(tmp_path: Path):
+    """
+    Signature:
+        test_exp008_local_contrast_edge(tmp_path: Path) -> None
+
+    Objective:
+        Test LocalContrastEdgeBaseline prediction mask generation with 3D gradient and local contrast gating.
+    """
+    from scripts.phase_2a_rule_based.exp_008_local_contrast_edge_priors import LocalContrastEdgeBaseline
+
+    cache_file = tmp_path / "synthetic_pdf_cache.npz"
+    create_synthetic_cache(cache_file, canonical_shape=(32, 32, 32))
+
+    engine = LocalContrastEdgeBaseline(
+        pdf_cache_path=cache_file,
+        dataset_json_path=tmp_path / "dataset.json",
+        seg_raw_dir=tmp_path / "raw_masks",
+        force_rebuild=False,
+    )
+
+    ct_img = np.full((32, 32, 32), -500.0, dtype=np.float32)
+    # Add a high density region
+    ct_img[10:20, 10:20, 10:20] = 50.0
+
+    pred_mask = engine.generate_prediction_mask(cat_code="2d", target_shape_ras=(32, 32, 32), ct_img_ras=ct_img)
+    assert pred_mask.shape == (32, 32, 32)
+    assert pred_mask.dtype == np.uint8
+
+
+def test_exp009_morphological_shape(tmp_path: Path):
+    """
+    Signature:
+        test_exp009_morphological_shape(tmp_path: Path) -> None
+
+    Objective:
+        Test MorphologicalShapeBaseline prediction mask generation with 3D aspect ratio and sphericity pruning.
+    """
+    from scripts.phase_2a_rule_based.exp_009_morphological_shape_priors import MorphologicalShapeBaseline
+
+    cache_file = tmp_path / "synthetic_pdf_cache.npz"
+    create_synthetic_cache(cache_file, canonical_shape=(32, 32, 32))
+
+    engine = MorphologicalShapeBaseline(
+        pdf_cache_path=cache_file,
+        dataset_json_path=tmp_path / "dataset.json",
+        seg_raw_dir=tmp_path / "raw_masks",
+        force_rebuild=False,
+    )
+
+    ct_img = np.full((32, 32, 32), -500.0, dtype=np.float32)
+
+    pred_mask = engine.generate_prediction_mask(cat_code="2d", target_shape_ras=(32, 32, 32), ct_img_ras=ct_img)
+    assert pred_mask.shape == (32, 32, 32)
+    assert pred_mask.dtype == np.uint8
+
+
 if __name__ == "__main__":
     print("=" * 70)
     print("      RUNNING EMPIRICAL SPATIAL PDF BASELINE ENGINE TEST SUITE")
@@ -509,6 +565,8 @@ if __name__ == "__main__":
         test_generate_prediction_mask_composite_rules,
         test_parse_prompt_spatial_locators,
         test_generate_prediction_mask_text_spatial_locators,
+        test_exp008_local_contrast_edge,
+        test_exp009_morphological_shape,
     ]
 
     passed = 0
@@ -534,5 +592,6 @@ if __name__ == "__main__":
     print("=" * 70)
     if failed > 0:
         sys.exit(1)
+
 
 

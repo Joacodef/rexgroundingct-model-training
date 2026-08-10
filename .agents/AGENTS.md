@@ -61,3 +61,13 @@ You MUST always run persistent tasks in one of the following ways:
 * **Git Commit & Push Approval Protocol**: NEVER execute `git commit` or `git push` automatically. You MUST always ask the USER for explicit permission before staging, committing, or pushing code or documentation changes.
 * **Relative Path Directive**: ALL documentation, markdown files, and codebase scripts MUST strictly use **relative paths** (e.g., `scripts/phase_2b_voxtell/exp_001_voxtell_inference.py`).
 * **Master Plan Abstraction Directive**: The master plan (`.agents/shared/MASTER_PLAN.md`) MUST be maintained strictly as a big-picture, high-level scientific and technical roadmap. It MUST NOT contain references to specific file paths, script names, or implementation conventions (which belong exclusively in `AGENTS.md` or `README.md`).
+
+---
+
+## 🧩 Code Simplicity & Auditability Contract
+* **Imperative-First Directive**: Default to plain, top-to-bottom imperative code. Classes, abstract base classes, config systems, or design patterns require explicit justification — they are not a default.
+* **Rule of Three**: Do not abstract or generalize a code block until the identical pattern has appeared 3 times. Duplication is cheaper than a wrong abstraction.
+* **No Unsolicited Refactors**: Diffs must be scoped strictly to the requested change. Multi-file restructuring requires explicit prior approval, same tier as the Git Commit Protocol.
+* **No Silent Dependencies**: New third-party libraries beyond the approved stack (MONAI, etc.) require explicit user approval before being added.
+* **Plain-Language Explain-Back**: Before any non-trivial diff is accepted, the agent must summarize in 3-5 sentences what changed and why, in plain language. If the user cannot restate that summary unaided, treat it as a signal to simplify — not a signal to invest more time understanding it.
+* **Architectural Hypotheses**: Complexity increases (new abstraction, new dependency, new module boundary) are themselves treated as hypotheses (per the Non-Prescriptive Scientific Inquiry Directive) and validated by measurable benefit — readability, reuse, or performance — not assumed a priori.

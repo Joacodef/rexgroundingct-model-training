@@ -93,7 +93,8 @@ def main():
     args = parse_args()
 
     pdf_cache_path = Path(args.pdf_cache) if args.pdf_cache else DATA_DIR / "phase_2a" / "empirical_spatial_pdf_14cat_anchored.npz"
-    output_dir = Path(args.output_dir) if args.output_dir else PREDICTIONS_DIR / "phase_2a_exp_002_quantile"
+    default_output_dirname = "phase_2a_exp_002_quantile" if args.split == "val" else f"phase_2a_exp_002_quantile_{args.split}"
+    output_dir = Path(args.output_dir) if args.output_dir else PREDICTIONS_DIR / default_output_dirname
     exp_log_dir = LOGS_DIR / "phase_2a_rule_based" / "exp_002_spatial_priors_quantile"
 
     # Initialize Predictor Engine (Empirical Volume Quantile Matching Mode)

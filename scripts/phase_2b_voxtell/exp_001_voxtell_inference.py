@@ -16,28 +16,39 @@ import gc
 import ctypes
 import json
 import argparse
+from pathlib import Path
+from tqdm import tqdm
+from dotenv import load_dotenv
+
+# Load environment variables FIRST before PyTorch CUDA initialization
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+load_dotenv(override=False)
+
 import torch
 import numpy as np
 import nibabel as nib
+from pathlib import Path
 from tqdm import tqdm
 from huggingface_hub import snapshot_download
-from dotenv import load_dotenv
-from nibabel.orientations import io_orientation, axcodes2ornt, ornt_transform
 
-# Load environment variables from .env file
-load_dotenv(override=True)
-
-# 1. Strictly isolate GPU (Node policy) MUST happen before VoxTell/nnU-Net imports
-# Note: CUDA_VISIBLE_DEVICES must be explicitly set in the environment or .env
-
+# Strictly isolate GPU before VoxTell imports
 import sys
-from voxtell.inference.predictor import VoxTellPredictor
-from nnunetv2.imageio.nibabel_reader_writer import NibabelIOWithReorient
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-sys.path.append(os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+from voxtell.inference.predictor import VoxTellPredictor
+from scripts.common.orientation import load_nifti_ras, save_nifti
+
+
+
+
 
 def main():
-    """Main CLI entry point for executing VoxTell v1.1 batch zero-shot inference and 4D Back-Reorientation."""
+    """
+    Main CLI entry point for executing VoxTell v1.1 batch zero-shot inference 
+    canonicalized to RAS space via Centralized Spatial Engine (orientation.py).
+    """
     # Parse CLI arguments for split selection
     parser = argparse.ArgumentParser(description="VoxTell Batch Zero-Shot Inference")
     parser.add_argument("--split", type=str, default="val", choices=["train", "val", "test"], 
@@ -56,16 +67,15 @@ def main():
     parser.add_argument("--end_idx", type=int, default=None, help="End index for processing dataset entries (exclusive)")
     args = parser.parse_args()
 
-
-    # Inject paths from .env file
-    download_dir = os.environ["MODEL_DIR"]
-    img_raw_dir = os.environ["IMG_RAW_DIR"]
-    output_dir = args.output_dir or os.environ.get("TMP_PRED_DIR") or os.environ["DATA_PRED_DIR"]
-    dataset_json = args.dataset_json or os.environ["DATASET_JSON"]
+    # Inject paths from .env file or fallback config
+    download_dir = os.environ.get("MODEL_DIR", "models/voxtell")
+    img_raw_dir = os.environ.get("IMG_RAW_DIR", "../data/raw/images")
+    output_dir = args.output_dir or os.environ.get("TMP_PRED_DIR") or os.environ.get("DATA_PRED_DIR", "../data/predictions/phase_2b_voxtell")
+    dataset_json = args.dataset_json or os.environ.get("DATASET_JSON", "../data/dataset.json")
 
     # Security validation for critical environment variables
     if not all([download_dir, img_raw_dir, output_dir, dataset_json]):
-        raise ValueError("Error: Missing environment variables in .env (MODEL_DIR, IMG_RAW_DIR, DATA_PRED_DIR/TMP_PRED_DIR, DATASET_JSON).")
+        raise ValueError("Error: Missing required environment variables (MODEL_DIR, IMG_RAW_DIR, DATA_PRED_DIR/TMP_PRED_DIR, DATASET_JSON).")
 
     # Prepare directories
     os.makedirs(output_dir, exist_ok=True)
@@ -92,6 +102,41 @@ def main():
     predictor = VoxTellPredictor(model_dir=voxtell_weights_dir, device=device)
     predictor.tile_step_size = args.tile_step_size
     
+    # Offload sliding window result accumulators to CPU memory to prevent CUDA OOM
+    predictor.perform_everything_on_device = False
+    
+    # Memory optimization: Keep text backbone on CPU to prevent CUDA OOM
+    predictor.text_backbone = predictor.text_backbone.to("cpu")
+
+    def embed_text_prompts_cpu_safe(text_prompts):
+        """
+        Signature:
+            embed_text_prompts_cpu_safe(text_prompts: List[str] | str) -> torch.Tensor
+
+        Objective:
+            Computes text embeddings using CPU-offloaded Qwen2-0.5B text backbone to prevent
+            CUDA VRAM OOM while returning final prompt tensor embeddings on GPU device.
+
+        Args:
+            text_prompts (List[str] | str): Input free-text prompt strings.
+
+        Returns:
+            torch.Tensor: Normalized prompt embeddings tensor of shape (1, N_prompts, D_embed) on predictor device.
+        """
+        from voxtell.utils.text_embedding import wrap_with_instruction, last_token_pool
+        if isinstance(text_prompts, str):
+            text_prompts = [text_prompts]
+        n_prompts = len(text_prompts)
+        wrapped = wrap_with_instruction(text_prompts)
+        tokens = predictor.tokenizer(wrapped, padding=True, truncation=True, max_length=predictor.max_text_length, return_tensors="pt")
+        with torch.no_grad():
+            text_embed = predictor.text_backbone(**tokens)
+            embeddings = last_token_pool(text_embed.last_hidden_state, tokens['attention_mask'])
+            embeddings = embeddings.view(1, n_prompts, -1)
+        return embeddings.to(predictor.device)
+
+    predictor.embed_text_prompts = embed_text_prompts_cpu_safe
+    
     # Load custom checkpoint weights if specified
     if args.checkpoint:
         print(f"Loading custom checkpoint weights from {args.checkpoint}...")
@@ -110,9 +155,6 @@ def main():
             print("Loaded raw state_dict from checkpoint.")
             
         predictor.network.load_state_dict(state_dict)
-    
-    # Data Reading and Reorientation (Critical for VoxTell)
-    reader = NibabelIOWithReorient()
 
     # Load Ground Truth metadata
     with open(dataset_json, 'r') as f:
@@ -131,6 +173,7 @@ def main():
 
     # Batch Inference Loop
     for entry in tqdm(entries, desc=f"Evaluating {args.split} Scans [{args.start_idx}:{end_idx}]"):
+        torch.cuda.empty_cache()
         scan_id = entry.get("name", "").replace(".nii.gz", "")
         if not scan_id:
             continue
@@ -147,8 +190,10 @@ def main():
             missing_files_count += 1
             continue
             
-        # Load and reorient volume to RAS
-        img, img_properties = reader.read_images([nifti_path])
+        # Step 1: Load CT image in canonical NIfTI RAS physical coordinate space
+        # load_nifti_ras() standardizes DICOM/NIfTI headers so axis 0=Right, 1=Anterior, 2=Superior.
+        # Image shape: (X, Y, Z)
+        img_ras, ras_nii, raw_axcodes = load_nifti_ras(nifti_path)
         
         findings = entry.get('findings', {})
         if not findings:
@@ -167,45 +212,37 @@ def main():
                     text_prompts.append(str(val))
         else:
             text_prompts = [f['text'] if isinstance(f, dict) else f for f in findings]
-        
 
-        
-        # Inference
+        # Step 2: Transpose image array from NIfTI RAS indexing (X, Y, Z) to nnUNet/VoxTell memory layout (Z, Y, X)
+        # CRITICAL TECHNICAL DIRECTIVE: VoxTell's 3D Swin UNet model was pre-trained on nnUNet v2 pipelines.
+        # nnUNet's NibabelIOWithReorient applies .transpose((2, 1, 0)) to place the axial depth/slice axis (Z)
+        # at index 0 (depth-first C-contiguous ordering). Without this transposition, 3D convolutions receive
+        # rotated sagittal cross-sections, destroying spatial feature matching and collapsing logits to near-zero.
+        img_nnunet = img_ras.transpose((2, 1, 0))  # Shape: (Z, Y, X)
+
+        # Step 3: Preprocess and run sliding window inference on nnUNet-ordered image array (Z, Y, X)
+        data_tensor, bbox, orig_shape = predictor.preprocess(img_nnunet)
+        embeddings = predictor.embed_text_prompts(text_prompts)
+
         with torch.no_grad():
-            voxtell_seg = predictor.predict_single_image(img, text_prompts) # shape: (F, Z, Y, X)
+            logits = predictor.predict_sliding_window_return_logits(data_tensor, embeddings).cpu()
+            probs_nnunet_crop = torch.sigmoid(logits.float()).numpy()
 
-            
-        # Reorient 4D prediction back to original image space
-        # 1. Transpose from (F, Z, Y, X) to (X, Y, Z, F) in RAS space
-        pred_xyzf = np.transpose(voxtell_seg, (3, 2, 1, 0))
-        
-        # 2. Create NIfTI in RAS space using reoriented_affine
-        reoriented_affine = img_properties['nibabel_stuff']['reoriented_affine']
-        pred_nib = nib.Nifti1Image(pred_xyzf, reoriented_affine)
-        
-        # 3. Get the transformation to go from RAS back to original orientation
-        original_affine = img_properties['nibabel_stuff']['original_affine']
-        img_ornt = io_orientation(original_affine)
-        ras_ornt = axcodes2ornt("RAS")
-        from_canonical = ornt_transform(ras_ornt, img_ornt)
-        
-        # 4. Apply back-reorientation
-        pred_nib_back = pred_nib.as_reoriented(from_canonical)
-        
-        # 5. Extract data and transpose back to (F, X, Y, Z) to preserve original shape contract
-        # Use dataobj instead of get_fdata() to avoid a massive float64 memory spike
-        pred_back_data = np.asanyarray(pred_nib_back.dataobj).astype(np.uint8) # shape: (X, Y, Z, F)
-        pred_back_fxyz = np.transpose(pred_back_data, (3, 0, 1, 2)) # shape: (F, X, Y, Z)
-        
-        # Save prediction with the original raw image affine
-        out_nii = nib.Nifti1Image(pred_back_fxyz, original_affine)
-        out_path = os.path.join(output_dir, f"{scan_id}.nii.gz")
-        nib.save(out_nii, out_path)
+        # Step 4: Revert cropping by inserting cropped probabilities back into original 3D volume shape (F, Z_orig, Y_orig, X_orig)
+        from acvl_utils.cropping_and_padding.bounding_boxes import insert_crop_into_image
+        probs_nnunet_full = np.zeros([probs_nnunet_crop.shape[0], *orig_shape], dtype=np.float32)
+        probs_nnunet_full = insert_crop_into_image(probs_nnunet_full, probs_nnunet_crop, bbox)
+
+        # Step 5: Untranspose predicted binary mask from (F, Z, Y, X) back to canonical NIfTI RAS space (F, X, Y, Z)
+        # This restores exact 3D spatial alignment with ground-truth RAS segmentation masks.
+        voxtell_seg = ((probs_nnunet_full.transpose((0, 3, 2, 1))) > 0.5).astype(np.uint8)  # shape: (F, X, Y, Z)
+
+        # Step 6: Save prediction in canonical RAS space using Centralized Spatial Engine
+        save_nifti(voxtell_seg, out_path, ras_nii.affine)
         
         # Explicit memory cleanup to prevent OS OOM killer
-        del img, voxtell_seg, pred_xyzf, pred_nib, pred_nib_back, pred_back_data, pred_back_fxyz, out_nii
+        del img_ras, ras_nii, voxtell_seg
         gc.collect()
-        # Force glibc to return freed memory to the OS (solves Python memory fragmentation)
         try:
             ctypes.CDLL("libc.so.6").malloc_trim(0)
         except Exception:
@@ -213,6 +250,7 @@ def main():
 
     if missing_files_count > 0:
         print(f"\n[INFO] Inference completed. Skipped {missing_files_count} missing files.")
+
 
 if __name__ == "__main__":
     main()

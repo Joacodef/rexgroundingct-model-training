@@ -27,7 +27,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from scripts.config import (
     DATA_DIR, DATASET_JSON, RAW_IMAGES_DIR, RAW_MASKS_DIR, 
-    PREDICTIONS_DIR, LOGS_DIR
+    PREDICTIONS_DIR, LOGS_DIR, PHASE_2A_PDFS_DIR
 )
 from scripts.phase_2a_rule_based.common import EmpiricalSpatialPDFBaseline, run_prior_inference_and_eval
 
@@ -122,7 +122,11 @@ def main():
     """Main CLI entry point for Exp 006 Pipeline."""
     args = parse_args()
 
-    pdf_cache_path = Path(args.pdf_cache) if args.pdf_cache else DATA_DIR / "phase_2a" / "empirical_spatial_pdf_14cat_anchored.npz"
+    pdf_cache_path = Path(args.pdf_cache) if args.pdf_cache else (
+        PHASE_2A_PDFS_DIR / "empirical_spatial_pdf_14cat_anchored.npz"
+        if (PHASE_2A_PDFS_DIR / "empirical_spatial_pdf_14cat_anchored.npz").exists()
+        else DATA_DIR / "phase_2a" / "empirical_spatial_pdf_14cat_anchored.npz"
+    )
     output_dir = Path(args.output_dir) if args.output_dir else PREDICTIONS_DIR / "phase_2a_exp_006_composite_rules"
     exp_log_dir = LOGS_DIR / "phase_2a_rule_based" / "exp_006_composite_rule_priors"
 

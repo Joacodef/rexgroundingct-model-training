@@ -75,6 +75,8 @@ def main():
     
     parser.add_argument("--output_json", type=str, default=None, help="Path to save evaluation results (defaults to matching logs/ directory)")
     parser.add_argument("--split", type=str, default="val", help="Dataset split to evaluate")
+    parser.add_argument("--start_idx", type=int, default=0, help="Start index for processing dataset entries")
+    parser.add_argument("--end_idx", type=int, default=None, help="End index for processing dataset entries (exclusive)")
     args = parser.parse_args()
 
     # Intelligent default output_json resolution matching logs/ directory layout
@@ -87,7 +89,8 @@ def main():
         else:
             log_target_dir = LOGS_DIR / "common"
         log_target_dir.mkdir(parents=True, exist_ok=True)
-        args.output_json = str(log_target_dir / f"eval_results_{args.split}.json")
+        suffix = f"_{args.start_idx}_{args.end_idx}" if (args.start_idx != 0 or args.end_idx is not None) else ""
+        args.output_json = str(log_target_dir / f"eval_results_{args.split}{suffix}.json")
 
     if not all([args.gt_dir, args.pred_dir, args.dataset_json]):
         print("[ERROR] Missing required paths. Please ensure DATA_PREP_DIR, DATA_PRED_DIR, and DATASET_JSON are set in your environment variables or passed as arguments.")
@@ -101,6 +104,8 @@ def main():
     if not entries:
         print(f"[ERROR] No entries found for split '{args.split}' in dataset.json")
         return
+
+    entries = entries[args.start_idx : args.end_idx]
 
     all_dices = []
     hits_01 = 0

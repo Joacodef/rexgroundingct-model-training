@@ -12,8 +12,8 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# 1. Load local .env environment variables if present
-load_dotenv(override=True)
+# 1. Load local .env environment variables if present (shell environment takes precedence)
+load_dotenv(override=False)
 
 # 2. Determine Repository Root Directory dynamically
 # scripts/config.py -> parent is scripts/ -> parent is sub-repo root
@@ -34,7 +34,13 @@ RAW_IMAGES_DIR = Path(os.getenv("IMG_RAW_DIR") or (DATA_DIR / "raw" / "images"))
 RAW_MASKS_DIR = Path(os.getenv("SEG_RAW_DIR") or (DATA_DIR / "raw" / "segmentations"))
 PREPROCESSED_DIR = Path(os.getenv("DATA_PREP_DIR") or (DATA_DIR / "preprocessed"))
 PREDICTIONS_DIR = Path(os.getenv("DATA_PRED_DIR") or (DATA_DIR / "predictions"))
-TEXT_CACHE_DIR = Path(os.getenv("TEXT_CACHE_DIR") or (DATA_DIR / "text_cache"))
+
+# 5. Pre-computed Intermediate Feature & Prior Directories
+INTERMEDIATE_FEATURES_DIR = Path(os.getenv("INTERMEDIATE_FEATURES_DIR") or (DATA_DIR / "intermediate_features"))
+PHASE_1_PRIORS_DIR = Path(os.getenv("PHASE_1_PRIORS_DIR") or (INTERMEDIATE_FEATURES_DIR / "phase_1_priors"))
+PHASE_1_PRIORS_BUNDLE = PHASE_1_PRIORS_DIR / "phase_1_priors_bundle.json"
+PHASE_2A_PDFS_DIR = Path(os.getenv("PHASE_2A_PDFS_DIR") or (INTERMEDIATE_FEATURES_DIR / "phase_2a_spatial_pdfs"))
+TEXT_CACHE_DIR = Path(os.getenv("TEXT_CACHE_DIR") or (INTERMEDIATE_FEATURES_DIR / "text_embeddings"))
 
 # 5. Model & Checkpoint Paths
 MODEL_DIR = Path(os.getenv("MODEL_DIR") or (MODELS_DIR / "voxtell_v1.1"))

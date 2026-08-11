@@ -24,7 +24,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from scripts.config import DATA_DIR, VISUALIZATIONS_DIR, CATEGORY_MAP, SPATIAL_TAXONOMY
+from scripts.config import DATA_DIR, VISUALIZATIONS_DIR, CATEGORY_MAP, SPATIAL_TAXONOMY, PHASE_2A_PDFS_DIR
 
 
 def extract_coronal_peak_slice(density_3d: np.ndarray) -> tuple[int, int, int, float, np.ndarray]:
@@ -85,8 +85,9 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate dark-themed Coronal spatial probability density PNG heatmaps for all 14 pathologies"
     )
+    default_cache = str(PHASE_2A_PDFS_DIR / "empirical_spatial_pdf_14cat.npz") if (PHASE_2A_PDFS_DIR / "empirical_spatial_pdf_14cat.npz").exists() else str(DATA_DIR / "phase_2a" / "empirical_spatial_pdf_14cat.npz")
     parser.add_argument(
-        "--density_cache", type=str, default=str(DATA_DIR / "phase_2a" / "empirical_spatial_pdf_14cat.npz"),
+        "--density_cache", type=str, default=default_cache,
         help="Path to precomputed 3D spatial probability density cache file (.npz)"
     )
     parser.add_argument(

@@ -5,12 +5,11 @@ OBJECTIVE:      Exports shared spatial prior baseline engines and inference runn
 ===============================================================================
 """
 
-from .prior_engine import EmpiricalSpatialPDFBaseline, EMPIRICAL_VOLUME_QUANTILES, CATEGORY_HU_BOUNDS
+from .prior_engine import EmpiricalSpatialPDFBaseline, EMPIRICAL_VOLUME_QUANTILES
 from .runner import run_prior_inference_and_eval
 
 __all__ = [
     "EmpiricalSpatialPDFBaseline", 
     "run_prior_inference_and_eval", 
-    "EMPIRICAL_VOLUME_QUANTILES", 
-    "CATEGORY_HU_BOUNDS"
+    "EMPIRICAL_VOLUME_QUANTILES"
 ]

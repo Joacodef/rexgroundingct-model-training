@@ -29,7 +29,6 @@ if str(ROOT_DIR) not in sys.path:
 
 from scripts.config import CATEGORY_MAP
 from scripts.phase_2a_rule_based.common.prior_engine import EmpiricalSpatialPDFBaseline
-from scripts.common.nlp_locators import parse_prompt_spatial_locators, generate_text_spatial_mask
 
 
 
@@ -342,210 +341,6 @@ def test_generate_prediction_mask_all_zero_pdf(tmp_path: Path):
     assert np.all(pred_mask == 0)
 
 
-def test_generate_prediction_mask_hu_windowing(tmp_path: Path):
-    """
-    Signature:
-        test_generate_prediction_mask_hu_windowing(tmp_path: Path) -> None
-
-    Objective:
-        Verify generate_prediction_mask zeroes out voxels outside category HU radiodensity bounds.
-    """
-    cache_file = tmp_path / "hu_test_cache.npz"
-    grid = np.ones((32, 32, 32), dtype=np.float32)
-    np.savez_compressed(cache_file, **{"1c": grid})
-
-    engine = EmpiricalSpatialPDFBaseline(
-        pdf_cache_path=cache_file,
-        dataset_json_path=tmp_path / "dataset.json",
-        seg_raw_dir=tmp_path / "raw_masks",
-        force_rebuild=False,
-        threshold_mode="hu_quantile",
-    )
-
-    # Synthetic CT image: Half valid HU (-500 HU), Half invalid HU (+1000 HU for Emphysema '1c' whose max is +252 HU)
-    ct_img = np.full((32, 32, 32), -500.0, dtype=np.float32)
-    ct_img[:, :, 16:] = 1000.0  # Invalid HU region for 1c
-
-    pred_mask = engine.generate_prediction_mask(cat_code="1c", target_shape_ras=(32, 32, 32), ct_img_ras=ct_img)
-    assert pred_mask.shape == (32, 32, 32)
-    # The invalid HU region (Z >= 16) must be completely zeroed out
-    assert np.all(pred_mask[:, :, 16:] == 0)
-
-
-def test_generate_prediction_mask_body_gated_hu(tmp_path: Path):
-    """
-    Signature:
-        test_generate_prediction_mask_body_gated_hu(tmp_path: Path) -> None
-
-    Objective:
-        Verify generate_prediction_mask zeroes out room air (HU < -1000) and high density (> 1000) in body_gated_hu mode.
-    """
-    cache_file = tmp_path / "body_gated_test_cache.npz"
-    grid = np.ones((32, 32, 32), dtype=np.float32)
-    np.savez_compressed(cache_file, **{"1c": grid, "2e": grid})
-
-    engine = EmpiricalSpatialPDFBaseline(
-        pdf_cache_path=cache_file,
-        dataset_json_path=tmp_path / "dataset.json",
-        seg_raw_dir=tmp_path / "raw_masks",
-        force_rebuild=False,
-        threshold_mode="body_gated_hu",
-    )
-
-    # Synthetic CT image:
-    # Region 1 (Z < 10): Room Air (HU = -1024) -> Must be zeroed out
-    # Region 2 (10 <= Z < 20): Lung/Soft Tissue (HU = -500) -> Valid for 1c and 2e
-    # Region 3 (Z >= 20): High density / Bone (HU = 1500) -> Must be zeroed out by body gating
-    ct_img = np.full((32, 32, 32), -500.0, dtype=np.float32)
-    ct_img[:, :, :10] = -1024.0
-    ct_img[:, :, 20:] = 1500.0
-
-    pred_mask = engine.generate_prediction_mask(cat_code="2e", target_shape_ras=(32, 32, 32), ct_img_ras=ct_img)
-    assert pred_mask.shape == (32, 32, 32)
-    assert np.all(pred_mask[:, :, :10] == 0), "Room air region (< -1000 HU) was not zeroed out"
-    assert np.all(pred_mask[:, :, 20:] == 0), "Outside body high HU region (> 1000 HU) was not zeroed out"
-    assert np.any(pred_mask[:, :, 10:20] == 1), "Body interior region was incorrectly zeroed out"
-
-
-def test_generate_prediction_mask_composite_rules(tmp_path: Path):
-    """
-    Signature:
-        test_generate_prediction_mask_composite_rules(tmp_path: Path) -> None
-
-    Objective:
-        Test generate_prediction_mask with 'composite_rules' mode combining body air masking, 
-        selective HU windowing, density scaling (1.5x), and category-adaptive min blob pruning.
-
-    Inputs:
-        tmp_path (Path): Temporary path fixture.
-
-    Outputs:
-        None
-    """
-    cache_file = tmp_path / "synthetic_pdf_cache.npz"
-    create_synthetic_cache(cache_file, canonical_shape=(32, 32, 32))
-
-    engine = EmpiricalSpatialPDFBaseline(
-        pdf_cache_path=cache_file,
-        dataset_json_path=tmp_path / "dataset.json",
-        seg_raw_dir=tmp_path / "raw_masks",
-        force_rebuild=False,
-        threshold_mode="composite_rules",
-    )
-
-    ct_img = np.full((32, 32, 32), -500.0, dtype=np.float32)
-    ct_img[:, :, :10] = -1024.0
-
-    pred_mask = engine.generate_prediction_mask(cat_code="1a", target_shape_ras=(32, 32, 32), ct_img_ras=ct_img)
-    assert pred_mask.shape == (32, 32, 32)
-    assert np.all(pred_mask[:, :, :10] == 0), "Room air region (< -1000 HU) was not zeroed out in composite_rules"
-
-
-def test_parse_prompt_spatial_locators():
-    """
-    Signature:
-        test_parse_prompt_spatial_locators() -> None
-
-    Objective:
-        Verify parse_prompt_spatial_locators correctly extracts anatomical locators from free-text radiology strings.
-    """
-    bounds = parse_prompt_spatial_locators("Ground-glass opacity in the right lower lobe")
-    assert "rl" in bounds
-    assert bounds["rl"] == [0.45, 1.0]
-    assert "is" in bounds
-    assert bounds["is"] == [0.0, 0.55]
-
-    bounds_apical = parse_prompt_spatial_locators("Apical emphysema in left lung")
-    assert "rl" in bounds_apical
-    assert bounds_apical["rl"] == [0.0, 0.55]
-    assert "is" in bounds_apical
-    assert bounds_apical["is"] == [0.60, 1.0]
-
-
-def test_generate_prediction_mask_text_spatial_locators(tmp_path: Path):
-    """
-    Signature:
-        test_generate_prediction_mask_text_spatial_locators(tmp_path: Path) -> None
-
-    Objective:
-        Test generate_prediction_mask with 'text_spatial_locators' mode masking spatial heatmaps based on prompt text.
-    """
-    cache_file = tmp_path / "synthetic_pdf_cache.npz"
-    create_synthetic_cache(cache_file, canonical_shape=(32, 32, 32))
-
-    engine = EmpiricalSpatialPDFBaseline(
-        pdf_cache_path=cache_file,
-        dataset_json_path=tmp_path / "dataset.json",
-        seg_raw_dir=tmp_path / "raw_masks",
-        force_rebuild=False,
-        threshold_mode="text_spatial_locators",
-    )
-
-    prompt = "Atelectasis in the left lower lobe"
-    pred_mask = engine.generate_prediction_mask(
-        cat_code="2b", target_shape_ras=(32, 32, 32), prompt_text=prompt
-    )
-    assert pred_mask.shape == (32, 32, 32)
-    # Right side (X >= 18) should be masked out for 'left'
-    assert np.all(pred_mask[18:, :, :] == 0), "Right side was not zeroed out for 'left' prompt"
-
-
-def test_exp008_local_contrast_edge(tmp_path: Path):
-    """
-    Signature:
-        test_exp008_local_contrast_edge(tmp_path: Path) -> None
-
-    Objective:
-        Test LocalContrastEdgeBaseline prediction mask generation with 3D gradient and local contrast gating.
-    """
-    from scripts.phase_2a_rule_based.exp_008_local_contrast_edge_priors import LocalContrastEdgeBaseline
-
-    cache_file = tmp_path / "synthetic_pdf_cache.npz"
-    create_synthetic_cache(cache_file, canonical_shape=(32, 32, 32))
-
-    engine = LocalContrastEdgeBaseline(
-        pdf_cache_path=cache_file,
-        dataset_json_path=tmp_path / "dataset.json",
-        seg_raw_dir=tmp_path / "raw_masks",
-        force_rebuild=False,
-    )
-
-    ct_img = np.full((32, 32, 32), -500.0, dtype=np.float32)
-    # Add a high density region
-    ct_img[10:20, 10:20, 10:20] = 50.0
-
-    pred_mask = engine.generate_prediction_mask(cat_code="2d", target_shape_ras=(32, 32, 32), ct_img_ras=ct_img)
-    assert pred_mask.shape == (32, 32, 32)
-    assert pred_mask.dtype == np.uint8
-
-
-def test_exp009_morphological_shape(tmp_path: Path):
-    """
-    Signature:
-        test_exp009_morphological_shape(tmp_path: Path) -> None
-
-    Objective:
-        Test MorphologicalShapeBaseline prediction mask generation with 3D aspect ratio and sphericity pruning.
-    """
-    from scripts.phase_2a_rule_based.exp_009_morphological_shape_priors import MorphologicalShapeBaseline
-
-    cache_file = tmp_path / "synthetic_pdf_cache.npz"
-    create_synthetic_cache(cache_file, canonical_shape=(32, 32, 32))
-
-    engine = MorphologicalShapeBaseline(
-        pdf_cache_path=cache_file,
-        dataset_json_path=tmp_path / "dataset.json",
-        seg_raw_dir=tmp_path / "raw_masks",
-        force_rebuild=False,
-    )
-
-    ct_img = np.full((32, 32, 32), -500.0, dtype=np.float32)
-
-    pred_mask = engine.generate_prediction_mask(cat_code="2d", target_shape_ras=(32, 32, 32), ct_img_ras=ct_img)
-    assert pred_mask.shape == (32, 32, 32)
-    assert pred_mask.dtype == np.uint8
-
-
 if __name__ == "__main__":
     print("=" * 70)
     print("      RUNNING EMPIRICAL SPATIAL PDF BASELINE ENGINE TEST SUITE")
@@ -560,13 +355,6 @@ if __name__ == "__main__":
         test_generate_prediction_mask_noise_pruning,
         test_generate_prediction_mask_unknown_category_fallback,
         test_generate_prediction_mask_all_zero_pdf,
-        test_generate_prediction_mask_hu_windowing,
-        test_generate_prediction_mask_body_gated_hu,
-        test_generate_prediction_mask_composite_rules,
-        test_parse_prompt_spatial_locators,
-        test_generate_prediction_mask_text_spatial_locators,
-        test_exp008_local_contrast_edge,
-        test_exp009_morphological_shape,
     ]
 
     passed = 0
@@ -577,7 +365,7 @@ if __name__ == "__main__":
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 tmp_path = Path(tmp_dir)
-                if test_name in ("test_category_threshold_factors_complete", "test_parse_prompt_spatial_locators"):
+                if test_name == "test_category_threshold_factors_complete":
                     test_fn()
                 else:
                     test_fn(tmp_path)

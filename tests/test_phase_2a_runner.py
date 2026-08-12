@@ -112,7 +112,7 @@ class TestPhase2ARunner(unittest.TestCase):
         pred_file = self.output_dir / "test_scan_1.nii.gz"
         self.assertTrue(pred_file.exists(), f"Prediction file missing: {pred_file}")
 
-        pred_data, pred_nii, _ = load_nifti_ras(pred_file, ref_affine=self.affine)
+        pred_data, pred_nii, _ = load_nifti_ras(pred_file)
         self.assertEqual(pred_data.ndim, 4, f"Prediction mask should be 4D, got ndim={pred_data.ndim}")
         self.assertEqual(pred_data.shape[0], 2, f"Prediction mask should have 2 finding channels, got shape {pred_data.shape}")
 

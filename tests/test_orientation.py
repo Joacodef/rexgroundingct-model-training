@@ -102,7 +102,7 @@ def test_load_nifti_ras_4d_channels(tmp_path: Path):
     file_path = tmp_path / "test_4d.nii.gz"
     nib.save(nii, str(file_path))
 
-    data_ras, ras_nii, raw_axcodes = load_nifti_ras(file_path, ref_affine=affine)
+    data_ras, ras_nii, raw_axcodes = load_nifti_ras(file_path)
 
     assert data_ras.ndim == 4
     assert data_ras.shape == (5, 20, 30, 40)
@@ -118,7 +118,7 @@ def test_load_nifti_ras_cropped_patch_4d(tmp_path: Path):
     file_path = tmp_path / "test_cropped_4d.nii.gz"
     nib.save(nii, str(file_path))
 
-    data_ras, ras_nii, raw_axcodes = load_nifti_ras(file_path, ref_affine=affine)
+    data_ras, ras_nii, raw_axcodes = load_nifti_ras(file_path)
 
     # Must move channel axis F (14) to index 0: (14, 10, 10, 10)
     assert data_ras.ndim == 4
@@ -186,7 +186,7 @@ def test_save_nifti_enforces_challenge_fxyz_format_despite_standard_conventions(
     assert disk_nii.shape == (5, 20, 30, 40)
 
     # Centralized spatial engine check: load_nifti_ras should return (5, 20, 30, 40)
-    reloaded_data, _, _ = load_nifti_ras(out_path, ref_affine=affine)
+    reloaded_data, _, _ = load_nifti_ras(out_path)
     assert reloaded_data.shape == (5, 20, 30, 40)
     assert np.array_equal(reloaded_data.astype(np.uint8), pred_4d)
 

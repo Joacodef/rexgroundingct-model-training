@@ -70,7 +70,7 @@ def main():
     # Inject paths from .env file or fallback config
     download_dir = os.environ.get("MODEL_DIR", "models/voxtell")
     img_raw_dir = os.environ.get("IMG_RAW_DIR", "../data/raw/images")
-    output_dir = args.output_dir or os.environ.get("TMP_PRED_DIR") or os.environ.get("DATA_PRED_DIR", "../data/predictions/phase_2b_voxtell")
+    output_dir = args.output_dir or os.environ.get("TMP_PRED_DIR") or os.path.join(os.environ.get("DATA_PRED_DIR", "../data/predictions"), "phase_2b_voxtell")
     dataset_json = args.dataset_json or os.environ.get("DATASET_JSON", "../data/dataset.json")
 
     # Security validation for critical environment variables
@@ -237,8 +237,8 @@ def main():
         # This restores exact 3D spatial alignment with ground-truth RAS segmentation masks.
         voxtell_seg = ((probs_nnunet_full.transpose((0, 3, 2, 1))) > 0.5).astype(np.uint8)  # shape: (F, X, Y, Z)
 
-        # Step 6: Save prediction in canonical RAS space using Centralized Spatial Engine
-        save_nifti(voxtell_seg, out_path, ras_nii.affine)
+        # Step 6: Save prediction anchored to parent CT scan header via Centralized Spatial Engine
+        save_nifti(voxtell_seg, out_path, nifti_path)
         
         # Explicit memory cleanup to prevent OS OOM killer
         del img_ras, ras_nii, voxtell_seg

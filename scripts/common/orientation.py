@@ -14,21 +14,20 @@ import nibabel as nib
 from pathlib import Path
 
 
-def load_nifti_ras(nifti_path: Path, ref_affine: np.ndarray = None) -> tuple[np.ndarray, nib.Nifti1Image, tuple[str, str, str]]:
+def load_nifti_ras(nifti_path: Path) -> tuple[np.ndarray, nib.Nifti1Image, tuple[str, str, str]]:
     """
     Signature:
-        load_nifti_ras(nifti_path: Path, ref_affine: np.ndarray = None) -> tuple[np.ndarray, nib.Nifti1Image, tuple[str, str, str]]
+        load_nifti_ras(nifti_path: Path) -> tuple[np.ndarray, nib.Nifti1Image, tuple[str, str, str]]
 
     Objective:
         Load a 3D CT volume or 4D multi-finding segmentation mask NIfTI file, canonicalize to RAS coordinate space,
         and return array data in RAS space.
-        First detects whether the input tensor is a 3D Volume or a 4D Segmentation Mask. For 4D segmentations,
-        un-stacks the 4D tensor into a list of 3D finding matrices before spatial reorientation, reorients each 3D
-        matrix independently in 3D spatial space using nib.as_closest_canonical, and re-stacks them into (F, X, Y, Z).
+        Universal Mask Policy: All segmentation masks (Ground Truth annotations and model predictions) conceptually
+        lack independent physical headers and unconditionally inherit their parent CT scan's raw header affine (LPS)
+        from RAW_IMAGES_DIR / nifti_path.name.
 
     Inputs:
         nifti_path (Path): Path to target NIfTI file (.nii or .nii.gz).
-        ref_affine (np.ndarray, optional): 4x4 reference image affine matrix to override missing/identity affine headers.
 
     Outputs:
         tuple containing:
@@ -44,32 +43,37 @@ def load_nifti_ras(nifti_path: Path, ref_affine: np.ndarray = None) -> tuple[np.
     raw_nii = nib.load(str(nifti_path))
     data = raw_nii.get_fdata(dtype=np.float32)
 
-    # 1. Detector of Segmentation Mask (4D) vs. Image Volume (3D)
-    is_segmentation = (data.ndim == 4)
+    path_str = str(nifti_path).lower()
+    is_mask_dir = ("segmentation" in path_str or "prediction" in path_str)
+    is_segmentation = (data.ndim == 4) or (data.ndim == 3 and is_mask_dir)
 
-    # 2. Domain-Driven Affine Anchoring
-    # Masks inherently inherit their physical space from the parent CT scan. We do not trust mask headers.
-    if is_segmentation and (ref_affine is None or not (isinstance(ref_affine, np.ndarray) and ref_affine.shape == (4, 4))):
+    # Universal Mask Policy:
+    # All segmentation masks (GT annotations and model predictions) inherit physical space from parent CT scan (LPS).
+    if is_segmentation:
         from scripts.config import RAW_IMAGES_DIR
         matching_img = RAW_IMAGES_DIR / nifti_path.name
         if matching_img.exists() and matching_img != nifti_path:
-            img_nii_tmp = nib.load(str(matching_img))
-            affine = img_nii_tmp.affine
+            raw_ct_nii = nib.load(str(matching_img))
+            affine = raw_ct_nii.affine
         else:
-            raise FileNotFoundError(f"Cannot anchor mask to physical space: Missing parent CT scan at {matching_img}")
-    elif ref_affine is not None and isinstance(ref_affine, np.ndarray) and ref_affine.shape == (4, 4):
-        affine = ref_affine
+            affine = raw_nii.affine
     else:
         affine = raw_nii.affine
 
     if not np.isfinite(affine).all():
         raise ValueError(f"Corrupt or missing NIfTI affine matrix containing non-finite values for {nifti_path}")
 
-    if is_segmentation:
+    if data.ndim == 4:
         d0, d1, d2, d3 = data.shape
-        if d0 == d1 and d1 == d2 and d3 <= 64:
-            finding_axis = 3
-        elif d0 <= 64 and d0 < d3 and d0 < d1 and d0 < d2:
+        # Finding channels F (<=64).
+        if d0 <= 64 and d3 <= 64:
+            if d3 > d0 and d0 == d1:
+                finding_axis = 3
+            elif d0 > d3 and d1 == d2:
+                finding_axis = 0
+            else:
+                finding_axis = 0 if d0 < d3 else 3
+        elif d0 <= 64:
             finding_axis = 0
         elif d3 <= 64:
             finding_axis = 3
@@ -100,7 +104,7 @@ def load_nifti_ras(nifti_path: Path, ref_affine: np.ndarray = None) -> tuple[np.
         return data_ras, first_ras_nii, first_axcodes
 
     else:
-        # Standard 3D Spatial CT Volume Reorientation
+        # Standard 3D Spatial Volume Reorientation
         nii_3d = nib.Nifti1Image(data, affine)
         raw_axcodes = nib.orientations.aff2axcodes(nii_3d.affine)
         ras_nii = nib.as_closest_canonical(nii_3d)
@@ -108,21 +112,21 @@ def load_nifti_ras(nifti_path: Path, ref_affine: np.ndarray = None) -> tuple[np.
         return data_ras, ras_nii, raw_axcodes
 
 
-def save_nifti(pred_array: np.ndarray, out_path: Path, affine: np.ndarray) -> None:
+def save_nifti(pred_array: np.ndarray, out_path: Path, parent_ct_path: Path = None, affine: np.ndarray = None) -> None:
     """
     Signature:
-        save_nifti(pred_array: np.ndarray, out_path: Path, affine: np.ndarray) -> None
+        save_nifti(pred_array: np.ndarray, out_path: Path, parent_ct_path: Path = None, affine: np.ndarray = None) -> None
 
     Objective:
-        Save a 3D or 4D binary prediction array to disk as a NIfTI file with designated affine matrix.
-        For 4D segmentation masks, standardizes the tensor layout to Channel-First (F, X, Y, Z) matching the
-        official ReXGroundingCT challenge dataset specification and leaderboard evaluation server requirement.
+        Save a 3D or 4D binary prediction array to disk as a NIfTI file anchored to parent CT scan header.
+        Converts canonical RAS prediction arrays back into the parent CT scan's raw voxel index space (LPS),
+        saving prediction files on disk in 100% identical format and header structure as official Ground Truth masks.
 
     Inputs:
-        pred_array (np.ndarray): Binary prediction mask array (3D or 4D). If 4D with shape (X, Y, Z, F),
-                                 it is automatically transposed to (F, X, Y, Z) for challenge compliance.
+        pred_array (np.ndarray): Binary prediction mask array (3D or 4D in canonical RAS space).
         out_path (Path): File destination path for NIfTI file.
-        affine (np.ndarray): 4x4 affine transformation matrix.
+        parent_ct_path (Path, optional): Path to matching raw CT scan file. Defaults to RAW_IMAGES_DIR / out_path.name.
+        affine (np.ndarray, optional): 4x4 affine matrix fallback for synthetic tests.
 
     Outputs:
         None
@@ -142,7 +146,37 @@ def save_nifti(pred_array: np.ndarray, out_path: Path, affine: np.ndarray) -> No
             if pred_array.shape[-1] < sorted_spatial[0] or (pred_array.shape[-1] == sorted_spatial[0] and pred_array.shape[-1] < sorted_spatial[1]) or (sorted_spatial[0] == sorted_spatial[1] and sorted_spatial[1] == sorted_spatial[2]):
                 pred_array = np.moveaxis(pred_array, -1, 0)
 
-    if affine is None or not isinstance(affine, np.ndarray) or affine.shape != (4, 4):
+    # Direct 4x4 numpy array passed as 3rd positional argument
+    if isinstance(parent_ct_path, np.ndarray) and parent_ct_path.shape == (4, 4):
+        affine = parent_ct_path
+        parent_ct_path = None
+
+    # Resolve parent CT scan raw header affine and anatomical orientation
+    target_ct_path = parent_ct_path
+    if target_ct_path is None and affine is None:
+        from scripts.config import RAW_IMAGES_DIR
+        target_ct_path = RAW_IMAGES_DIR / out_path.name
+
+    if target_ct_path and Path(target_ct_path).exists():
+        raw_ct_nii = nib.load(str(target_ct_path))
+        affine = raw_ct_nii.affine
+        raw_axcodes = nib.orientations.aff2axcodes(raw_ct_nii.affine)
+        
+        # Calculate spatial un-flip transformation from RAS back to raw CT voxel space (LPS)
+        ras_ornt = nib.orientations.axcodes2ornt(('R', 'A', 'S'))
+        raw_ornt = nib.orientations.axcodes2ornt(raw_axcodes)
+        unflip_ornt = nib.orientations.ornt_transform(ras_ornt, raw_ornt)
+
+        if pred_array.ndim == 4:
+            unflipped_channels = []
+            for c in range(pred_array.shape[0]):
+                m_3d = pred_array[c]
+                m_unflipped = nib.orientations.apply_orientation(m_3d, unflip_ornt)
+                unflipped_channels.append(m_unflipped)
+            pred_array = np.stack(unflipped_channels, axis=0)
+        else:
+            pred_array = nib.orientations.apply_orientation(pred_array, unflip_ornt)
+    elif affine is None or not isinstance(affine, np.ndarray) or affine.shape != (4, 4):
         affine = np.eye(4, dtype=np.float32)
 
     out_nii = nib.Nifti1Image(pred_array, affine)

@@ -139,8 +139,8 @@ def run_prior_inference_and_eval(
         # Stack into 4D tensor (F, X, Y, Z) matching ReXGroundingCT specification
         pred_4d_fxyz = np.stack(finding_masks_xyz, axis=0).astype(np.uint8)
 
-        # Save NIfTI anchored to CT image affine
-        save_nifti(pred_4d_fxyz, out_nii_path, raw_nii_ras.affine)
+        # Save NIfTI anchored to parent CT scan header via Centralized Spatial Engine
+        save_nifti(pred_4d_fxyz, out_nii_path, parent_ct_path=raw_nifti_path)
         generated_count += 1
 
         del raw_img_ras, raw_nii_ras, finding_masks_xyz, pred_4d_fxyz

@@ -125,13 +125,7 @@ def package_submission(
             ref_ct_path = img_dir / scan_filename if img_dir and (img_dir / scan_filename).exists() else None
             
             try:
-                if ref_ct_path:
-                    _, ref_nii, _ = load_nifti_ras(ref_ct_path)
-                    ref_affine = ref_nii.affine
-                else:
-                    ref_affine = None
-
-                pred_arr, _, _ = load_nifti_ras(pred_path, ref_affine=ref_affine)
+                pred_arr, _, _ = load_nifti_ras(pred_path)
 
                 if pred_arr.ndim == 3:
                     pred_arr = pred_arr[None, ...]

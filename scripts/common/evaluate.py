@@ -131,15 +131,8 @@ def main():
             continue
             
         # Load GT and Prediction 4D volumes in canonical RAS space
-        ct_matching_path = Path(args.img_dir) / f"{scan_id}.nii.gz" if args.img_dir else None
-        if ct_matching_path and ct_matching_path.exists():
-            _, ref_ct_nii, _ = load_nifti_ras(ct_matching_path)
-            ref_affine = ref_ct_nii.affine
-        else:
-            ref_affine = None
-
-        gt_img, _, _ = load_nifti_ras(gt_path, ref_affine=ref_affine)
-        pred_img, _, _ = load_nifti_ras(pred_path, ref_affine=ref_affine)
+        gt_img, _, _ = load_nifti_ras(gt_path)
+        pred_img, _, _ = load_nifti_ras(pred_path)
         
         # Expand 3D volumes to 4D (1, X, Y, Z) if single finding
         if gt_img.ndim == 3:

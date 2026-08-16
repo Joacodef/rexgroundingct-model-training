@@ -316,16 +316,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patch_size", type=int, default=192, help="Patch size for MONAI spatial crop")
     parser.add_argument("--device", type=str, default="cuda:0", help="Computation device (e.g. cuda:0)")
     parser.add_argument("--resume", action="store_true", help="Resume training from latest_model.pt if available")
-    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb", action="store_true", default=True, help="Enable Weights & Biases logging (default: True)")
+    parser.add_argument("--no_wandb", dest="wandb", action="store_false", help="Disable Weights & Biases logging")
     parser.add_argument("--wandb_project", type=str, default="rexgroundingct", help="Weights & Biases project name")
     parser.add_argument("--wandb_run_name", type=str, default="exp_001_naive_finetuning", help="Weights & Biases run name")
     return parser.parse_args()
 
 
-def train_naive_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, device: str, bce_criterion: nn.Module, dice_criterion: nn.Module) -> float:
+def train_naive_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, device: str, bce_criterion: nn.Module, dice_criterion: nn.Module, global_step: int = 0) -> tuple[float, int]:
     """
     Signature:
-        train_naive_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, device: str, bce_criterion: nn.Module, dice_criterion: nn.Module) -> float
+        train_naive_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, device: str, bce_criterion: nn.Module, dice_criterion: nn.Module, global_step: int = 0) -> tuple[float, int]
 
     Objective:
         Execute one training epoch using naïve supervised BCE + Dice loss.
@@ -338,9 +339,10 @@ def train_naive_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch
         device (str): Computation device string.
         bce_criterion (nn.Module): BCEWithLogitsLoss instance.
         dice_criterion (nn.Module): DiceLoss instance.
+        global_step (int): Running global iteration counter across epochs.
 
     Outputs:
-        float: Average training loss over the epoch.
+        tuple[float, int]: Average training loss over the epoch and updated global_step.
     """
     model.train()
     running_loss = 0.0
@@ -371,8 +373,21 @@ def train_naive_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch
         scaler.update()
         
         running_loss += total_loss.item()
+        global_step += 1
+
+        try:
+            import wandb
+            if wandb.run is not None and global_step % 5 == 0:
+                wandb.log({
+                    "train/step_loss": total_loss.item(),
+                    "train/step_bce": loss_bce.item(),
+                    "train/step_dice": loss_dice.item(),
+                    "step": global_step
+                })
+        except Exception:
+            pass
         
-    return running_loss / max(len(dataloader), 1)
+    return running_loss / max(len(dataloader), 1), global_step
 
 
 def load_voxtell_model(model_dir: str, device: str) -> nn.Module:
@@ -513,15 +528,17 @@ def main() -> None:
         )
         logger.info(f"Initialized Weights & Biases logging (Project: {args.wandb_project}, Run: {args.wandb_run_name})")
 
+    global_step = 0
     for epoch in range(start_epoch, args.epochs + 1):
-        epoch_loss = train_naive_epoch(
+        epoch_loss, global_step = train_naive_epoch(
             model=model,
             dataloader=train_loader,
             optimizer=optimizer,
             scaler=scaler,
             device=args.device,
             bce_criterion=bce_criterion,
-            dice_criterion=dice_criterion
+            dice_criterion=dice_criterion,
+            global_step=global_step
         )
         
         scheduler.step()

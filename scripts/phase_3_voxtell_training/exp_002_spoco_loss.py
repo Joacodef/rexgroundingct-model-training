@@ -502,7 +502,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patch_size", type=int, default=192, help="Patch size for MONAI spatial crop (default: 192)")
     parser.add_argument("--device", type=str, default="cuda:0", help="Computation device (e.g. cuda:0)")
     parser.add_argument("--resume", action="store_true", help="Resume training from latest_model.pt if available")
-    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb", action="store_true", default=True, help="Enable Weights & Biases logging (default: True)")
+    parser.add_argument("--no_wandb", dest="wandb", action="store_false", help="Disable Weights & Biases logging")
     parser.add_argument("--wandb_project", type=str, default="rexgroundingct", help="Weights & Biases project name")
     parser.add_argument("--wandb_run_name", type=str, default="exp_002_spoco_loss", help="Weights & Biases run name")
     return parser.parse_args()
@@ -517,11 +518,12 @@ def train_spoco_epoch(
     device: str,
     w_con: float,
     pos_weight: float,
-    alpha: float
-) -> tuple[float, float, float]:
+    alpha: float,
+    global_step: int = 0
+) -> tuple[float, float, float, int]:
     """
     Signature:
-        train_spoco_epoch(student_model: nn.Module, teacher_model: nn.Module, dataloader: DataLoader, optimizer: Optimizer, scaler: GradScaler, device: str, w_con: float, pos_weight: float, alpha: float) -> tuple[float, float, float]
+        train_spoco_epoch(student_model: nn.Module, teacher_model: nn.Module, dataloader: DataLoader, optimizer: Optimizer, scaler: GradScaler, device: str, w_con: float, pos_weight: float, alpha: float, global_step: int = 0) -> tuple[float, float, float, int]
 
     Objective:
         Execute one training epoch using PU-SPOCO dilated ROI masked supervision + Mean Teacher EMA consistency.
@@ -536,9 +538,10 @@ def train_spoco_epoch(
         w_con (float): Consistency loss weight for the current epoch.
         pos_weight (float): Positive class weight for BCE loss inside ROIs.
         alpha (float): EMA decay weighting factor for Teacher model update.
+        global_step (int): Running global iteration counter across epochs.
 
     Outputs:
-        tuple[float, float, float]: (avg_total_loss, avg_sup_loss, avg_con_loss).
+        tuple[float, float, float, int]: (avg_total_loss, avg_sup_loss, avg_con_loss, updated_global_step).
     """
     student_model.train()
     teacher_model.eval()
@@ -588,9 +591,23 @@ def train_spoco_epoch(
         total_loss_acc += total_loss.item()
         sup_loss_acc += loss_sup.item()
         con_loss_acc += loss_con.item()
+        global_step += 1
+
+        try:
+            import wandb
+            if wandb.run is not None and global_step % 5 == 0:
+                wandb.log({
+                    "train/step_total_loss": total_loss.item(),
+                    "train/step_sup_loss": loss_sup.item(),
+                    "train/step_con_loss": loss_con.item(),
+                    "train/w_con": w_con,
+                    "step": global_step
+                })
+        except Exception:
+            pass
         
     num_batches = max(len(dataloader), 1)
-    return total_loss_acc / num_batches, sup_loss_acc / num_batches, con_loss_acc / num_batches
+    return total_loss_acc / num_batches, sup_loss_acc / num_batches, con_loss_acc / num_batches, global_step
 
 
 def main() -> None:
@@ -676,10 +693,11 @@ def main() -> None:
         )
         logger.info(f"Initialized Weights & Biases logging (Project: {args.wandb_project}, Run: {args.wandb_run_name})")
 
+    global_step = 0
     for epoch in range(start_epoch, args.epochs + 1):
         w_con = get_consistency_weight(epoch, max_weight=args.max_consistency_weight, warm_up_epochs=args.consistency_warmup)
         
-        epoch_loss, sup_loss, con_loss = train_spoco_epoch(
+        epoch_loss, sup_loss, con_loss, global_step = train_spoco_epoch(
             student_model=student_model,
             teacher_model=teacher_model,
             dataloader=train_loader,
@@ -688,7 +706,8 @@ def main() -> None:
             device=args.device,
             w_con=w_con,
             pos_weight=args.pos_weight,
-            alpha=args.alpha
+            alpha=args.alpha,
+            global_step=global_step
         )
         
         scheduler.step()

@@ -522,7 +522,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patch_size", type=int, default=192, help="Patch size for MONAI spatial crop (default: 192)")
     parser.add_argument("--device", type=str, default="cuda:0", help="Computation device (e.g. cuda:0)")
     parser.add_argument("--resume", action="store_true", help="Resume training from latest_model.pt if available")
-    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb", action="store_true", default=True, help="Enable Weights & Biases logging (default: True)")
+    parser.add_argument("--no_wandb", dest="wandb", action="store_false", help="Disable Weights & Biases logging")
     parser.add_argument("--wandb_project", type=str, default="rexgroundingct", help="Weights & Biases project name")
     parser.add_argument("--wandb_run_name", type=str, default="exp_003_mpr_loss", help="Weights & Biases run name")
     return parser.parse_args()
@@ -537,11 +538,12 @@ def train_mpr_epoch(
     device: str,
     w_mpr: float,
     pos_weight: float,
-    alpha: float
-) -> tuple[float, float, float]:
+    alpha: float,
+    global_step: int = 0
+) -> tuple[float, float, float, int]:
     """
     Signature:
-        train_mpr_epoch(student_model: nn.Module, teacher_model: nn.Module, dataloader: DataLoader, optimizer: Optimizer, scaler: GradScaler, device: str, w_mpr: float, pos_weight: float, alpha: float) -> tuple[float, float, float]
+        train_mpr_epoch(student_model: nn.Module, teacher_model: nn.Module, dataloader: DataLoader, optimizer: Optimizer, scaler: GradScaler, device: str, w_mpr: float, pos_weight: float, alpha: float, global_step: int = 0) -> tuple[float, float, float, int]
 
     Objective:
         Execute one training epoch using PU-SPOCO ROI supervision + 3D Multi-Planar Projection (MPR) consistency.
@@ -556,9 +558,10 @@ def train_mpr_epoch(
         w_mpr (float): MPR consistency loss weight for current epoch.
         pos_weight (float): Positive class weight for BCE loss inside ROIs.
         alpha (float): EMA decay weighting factor for Teacher model update.
+        global_step (int): Running global iteration counter across epochs.
 
     Outputs:
-        tuple[float, float, float]: (avg_total_loss, avg_sup_loss, avg_mpr_loss).
+        tuple[float, float, float, int]: (avg_total_loss, avg_sup_loss, avg_mpr_loss, updated_global_step).
     """
     student_model.train()
     teacher_model.eval()
@@ -608,9 +611,23 @@ def train_mpr_epoch(
         total_loss_acc += total_loss.item()
         sup_loss_acc += loss_sup.item()
         mpr_loss_acc += loss_mpr.item()
+        global_step += 1
+
+        try:
+            import wandb
+            if wandb.run is not None and global_step % 5 == 0:
+                wandb.log({
+                    "train/step_total_loss": total_loss.item(),
+                    "train/step_sup_loss": loss_sup.item(),
+                    "train/step_mpr_loss": loss_mpr.item(),
+                    "train/w_mpr": w_mpr,
+                    "step": global_step
+                })
+        except Exception:
+            pass
         
     num_batches = max(len(dataloader), 1)
-    return total_loss_acc / num_batches, sup_loss_acc / num_batches, mpr_loss_acc / num_batches
+    return total_loss_acc / num_batches, sup_loss_acc / num_batches, mpr_loss_acc / num_batches, global_step
 
 
 def main() -> None:
@@ -696,10 +713,11 @@ def main() -> None:
         )
         logger.info(f"Initialized Weights & Biases logging (Project: {args.wandb_project}, Run: {args.wandb_run_name})")
 
+    global_step = 0
     for epoch in range(start_epoch, args.epochs + 1):
         w_mpr = get_mpr_rampup_weight(epoch, max_epochs=args.epochs, max_weight=args.max_mpr_weight)
         
-        epoch_loss, sup_loss, mpr_loss = train_mpr_epoch(
+        epoch_loss, sup_loss, mpr_loss, global_step = train_mpr_epoch(
             student_model=student_model,
             teacher_model=teacher_model,
             dataloader=train_loader,
@@ -708,7 +726,8 @@ def main() -> None:
             device=args.device,
             w_mpr=w_mpr,
             pos_weight=args.pos_weight,
-            alpha=args.alpha
+            alpha=args.alpha,
+            global_step=global_step
         )
         
         scheduler.step()

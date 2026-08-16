@@ -1,11 +1,11 @@
 """
 ===============================================================================
+[LEGACY FILE]:   Proof-of-Concept Mean Teacher Consistency Training Pipeline
 SCRIPT:         VoxTell Mean Teacher Consistency Training Pipeline
-PHASE:          Phase 3 — Model Fine-Tuning & Adaptation
-LOCATION:       scripts/phase_3_training/exp_001_train_mean_teacher.py
-OBJECTIVE:      Fine-tunes VoxTell using student-teacher EMA consistency loss 
-                to handle partial annotation suppression bias on 3D CT scans.
-USAGE:          python scripts/phase_3_training/exp_001_train_mean_teacher.py
+PHASE:          Phase 3 — Model Fine-Tuning & Adaptation (Legacy Proof-of-Concept)
+LOCATION:       scripts/phase_3_voxtell_training/legacy_train_mean_teacher.py
+OBJECTIVE:      Early proof-of-concept fine-tuning script for VoxTell using 
+                Student-Teacher EMA logit consistency loss. Preserved for reference.
 ===============================================================================
 """
 

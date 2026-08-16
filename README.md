@@ -110,11 +110,12 @@ Standalone official metric evaluation for predicted 4D segmentation masks agains
 python scripts/common/evaluate.py --gt_dir ../data/raw/segmentations --img_dir ../data/raw/images --pred_dir ../data/predictions/phase_2a_rule_based --split val
 ```
 
-### 4. PyTorch Mean Teacher Fine-Tuning (Phase 3)
-Run persistent Mean Teacher fine-tuning with gradient clipping and float32 upcasting:
+### 4. VoxTell Naïve Fine-Tuning (Phase 3)
+Run persistent VoxTell naïve supervised baseline fine-tuning:
 ```bash
-WANDB_MODE=offline PYTHONUNBUFFERED=1 nohup python -u scripts/phase_3_training/exp_001_train_mean_teacher.py --epochs 50 --wandb > logs/phase_3_training/exp_001_train_mean_teacher/run.log 2>&1 &
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 nohup python -u scripts/phase_3_training/exp_001_naive_finetuning.py --epochs 50 > logs/phase_3_training/exp_001_naive_finetuning/run.log 2>&1 &
 ```
+*(Note: Proof-of-concept Mean Teacher consistency trainer preserved at `scripts/phase_3_training/legacy_train_mean_teacher.py`)*
 
 ---
 

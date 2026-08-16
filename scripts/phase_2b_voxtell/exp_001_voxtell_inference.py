@@ -140,10 +140,13 @@ def main():
     # Load custom checkpoint weights if specified
     if args.checkpoint:
         print(f"Loading custom checkpoint weights from {args.checkpoint}...")
-        checkpoint = torch.load(args.checkpoint, map_location='cpu')
+        checkpoint = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
         
         # Determine which state dict to use
-        if 'student_state_dict' in checkpoint or 'teacher_state_dict' in checkpoint:
+        if 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+            print("Loaded 'model_state_dict' from checkpoint.")
+        elif 'student_state_dict' in checkpoint or 'teacher_state_dict' in checkpoint:
             key = 'teacher_state_dict' if args.use_teacher else 'student_state_dict'
             state_dict = checkpoint[key]
             print(f"Loaded '{key}' from checkpoint.")

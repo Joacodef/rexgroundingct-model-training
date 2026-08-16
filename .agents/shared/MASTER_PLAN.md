@@ -8,7 +8,8 @@
 > 2. **Phase 2 — Baselines & Preprocessing Audit**:
 >    - **Phase 2A — Statistical / Rule-Based Prior Baseline**: Non-neural prior baseline leveraging Phase 1 empirical data distributions to establish a non-learning lower-bound benchmark.
 >    - **Phase 2B — VoxTell Zero-Shot Baseline & Audit**: Official reorientation pipeline, sliding window tile overlap, per-category continuous logit threshold optimization, and failure mode profiling.
-> 3. **Phase 3 — Model Fine-Tuning & Consistency Adaptations**: Systematic benchmarking of candidate loss hypotheses (PU-SPOCO, Asymmetric Focal, Soft-Label Consistency) and dynamic post-processing.
+> 3. **Phase 3 — VoxTell Model Fine-Tuning**: Target VoxTell fine-tuning experiments exploring Naïve Supervised Baseline, Positive-Unlabeled (PU) SPOCO Loss, and Multi-View Pseudo-Label Regularization (MPR) Loss.
+> 4. **Phase 4 — Alternative Architectures & Unbiased Models**: Exploration and zero-leakage training of alternative 3D vision-language grounding models (e.g. SegVol, SAM-Med3D, or Swin UNETR multi-modal backbones) not pre-trained on ReXGroundingCT data.
 
 ---
 
@@ -56,17 +57,26 @@
 
 ---
 
-### Phase 3: Fine-Tuning & Model Adaptations
+### Phase 3: VoxTell Model Fine-Tuning
 * **Core Research Scope**:
-  * **Supervised & Loss Hypotheses Benchmarking**: Evaluate competing loss strategies to address sparse-to-exhaustive annotation disparity:
-    * **H1**: Positive-Unlabeled (PU) SPOCO loss.
-    * **H2**: Asymmetric Focal Loss / Focal Dice.
-    * **H3**: Soft Pseudo-Label & Mean Teacher Logit Consistency.
-  * **Multi-GPU Scaled Training**: Scale training across full training split using fast SSD volume caching.
-  * **Dynamic Post-Processing & Ensembling**: Multi-checkpoint ensembling, category-validated dynamic component filtering, and 4D test submission generator.
+  * **Targeted Loss Benchmarking**: Evaluate 3 specific loss strategies to address sparse-to-exhaustive annotation disparity on VoxTell:
+    * **Exp 001**: Naïve Supervised Baseline (BCE + Dice).
+    * **Exp 002**: Positive-Unlabeled (PU) SPOCO Loss.
+    * **Exp 003**: Multi-View Pseudo-Label Regularization (MPR) Loss.
+  * **Fast Volume Acceleration**: Execute training using fast local SSD volume caching.
+  * **Dynamic Post-Processing & Ensembling**: Multi-checkpoint ensembling and category-validated post-processing.
 
 * **Key Deliverables**:
-  1. *Fine-Tuned Model Checkpoints & Pipeline*: Validated trainer and high-performing model weights resolving instance suppression bias.
-  2. *Final Submission Package & Paper Manuscript*: Leaderboard submission package and MICCAI research manuscript.
+  1. *VoxTell Fine-Tuned Model Checkpoints*: Validated VoxTell trainer and high-performing model weights.
+  2. *Leaderboard Test Submission*: Official challenge submission package.
 
+---
 
+### Phase 4: Alternative Architectures & Unbiased Models
+* **Core Research Scope**:
+  * **Clean-Slate Architecture Exploration**: Evaluate alternative 3D vision-language grounding models not pre-trained on ReXGroundingCT data.
+  * **Comparative Cross-Architecture Benchmark**: Systematic benchmark comparing VoxTell against clean-slate 3D grounding backbones to isolate pre-training bias vs. architectural strength.
+
+* **Key Deliverables**:
+  1. *Alternative Model Suite & Benchmarks*: Validated trainers and benchmark reports across alternative 3D grounding backbones.
+  2. *Final Research Manuscript*: Comprehensive research manuscript detailing multi-model comparison.

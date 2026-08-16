@@ -53,6 +53,9 @@ You MUST always run persistent tasks in one of the following ways:
 * **Function Signature & Docstring Directive**: Standard library/utility functions and class methods MUST include a docstring as their very first statement outlining the function signature, a concise explanation of what the function does, its input arguments, and expected return outputs (boilerplate CLI helpers like `main()` and `parse_args()` only require a concise high-level docstring without a signature block).
 * **MONAI Framework Preference Contract**: Wherever reasonable and applicable (such as GPU-accelerated spatial resampling, intensity normalization, transform pipelines, and deep learning preprocessing), MONAI (`monai.transforms`) should be preferred for 3D medical image and mask operations, provided it respects the centralized spatial engine contracts in `scripts/common/orientation.py`.
 
+### 6. Environment & Virtualenv Contract (No Conda Environments)
+* **Strictly Prohibited: Conda Environments**: NEVER create or invoke Conda environments (`conda create`, `conda activate`, `/miniconda3/envs/...`). All execution, script runs, package management, and test invocations MUST strictly use the project's local virtual environment (`.venv/bin/python` or `uv`). The primary environment is `.venv` located at the repository root, pre-configured with PyTorch 2.13.0+cu130 and full hardware acceleration for all available compute devices (including RTX PRO 6000 Blackwell `sm_120`).
+
 ---
 
 ## 🧠 Behavior & Epistemic Modesty

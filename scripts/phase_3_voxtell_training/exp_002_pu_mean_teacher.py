@@ -1,12 +1,12 @@
 """
 ===============================================================================
-SCRIPT:         VoxTell Positive-Unlabeled (PU) SPOCO Fine-Tuning Pipeline
+SCRIPT:         VoxTell Positive-Unlabeled (PU) Mean Teacher Fine-Tuning Pipeline
 PHASE:          Phase 3 — Model Fine-Tuning & Loss Hypotheses Benchmarking
-LOCATION:       scripts/phase_3_voxtell_training/exp_002_spoco_loss.py
-OBJECTIVE:      Fine-tune VoxTell using Positive-Unlabeled (PU) SPOCO loss with 
+LOCATION:       scripts/phase_3_voxtell_training/exp_002_pu_mean_teacher.py
+OBJECTIVE:      Fine-tune VoxTell using Positive-Unlabeled (PU) learning with 
                 dilated ROI-masked supervision and Mean Teacher EMA consistency 
-                regularization to resolve instance suppression bias (Wolny et al., 2022).
-USAGE:          CUDA_VISIBLE_DEVICES=1 python scripts/phase_3_voxtell_training/exp_002_spoco_loss.py
+                regularization to resolve instance suppression bias.
+USAGE:          CUDA_VISIBLE_DEVICES=0 python scripts/phase_3_voxtell_training/exp_002_pu_mean_teacher.py
 ===============================================================================
 """
 
@@ -53,7 +53,7 @@ from scripts.common.orientation import load_nifti_ras
 from voxtell.model.voxtell_model import VoxTellModel
 
 # Setup experiment logging directory
-EXP_LOG_DIR = LOGS_DIR / "phase_3_voxtell_training" / "exp_002_spoco_loss"
+EXP_LOG_DIR = LOGS_DIR / "phase_3_voxtell_training" / "exp_002_pu_mean_teacher"
 EXP_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
@@ -64,7 +64,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
-logger = logging.getLogger("exp_002_spoco_loss")
+logger = logging.getLogger("exp_002_pu_mean_teacher")
 
 
 class ReXDataset(Dataset):
@@ -307,13 +307,13 @@ def compute_roi_mask(seg_target: torch.Tensor, kernel_size: int = 11, padding: i
     return dilated > 0
 
 
-def compute_spoco_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mask: torch.Tensor, pos_weight: float = 10.0) -> torch.Tensor:
+def compute_roi_masked_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mask: torch.Tensor, pos_weight: float = 10.0) -> torch.Tensor:
     """
     Signature:
-        compute_spoco_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mask: torch.Tensor, pos_weight: float) -> torch.Tensor
+        compute_roi_masked_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mask: torch.Tensor, pos_weight: float) -> torch.Tensor
 
     Objective:
-        Compute SPOCO Masked Supervised Loss (BCE + Dice) strictly confined within the dilated ROI mask.
+        Compute ROI-Masked Supervised Loss (BCE + Dice) strictly confined within the dilated ROI mask.
 
     Inputs:
         logits (torch.Tensor): Pre-sigmoid logit tensor of shape (B, F, Z, Y, X).
@@ -475,7 +475,7 @@ def parse_args() -> argparse.Namespace:
         parse_args() -> argparse.Namespace
 
     Objective:
-        Parse command line arguments for Exp 002 PU-SPOCO fine-tuning.
+        Parse command line arguments for Exp 002 PU Mean Teacher fine-tuning.
 
     Inputs:
         None
@@ -483,7 +483,7 @@ def parse_args() -> argparse.Namespace:
     Outputs:
         argparse.Namespace: Parsed CLI arguments.
     """
-    parser = argparse.ArgumentParser(description="VoxTell PU-SPOCO Fine-Tuning Pipeline (Exp 002)")
+    parser = argparse.ArgumentParser(description="VoxTell PU Mean Teacher Fine-Tuning Pipeline (Exp 002)")
     parser.add_argument("--dataset_json", type=str, default=str(DATASET_JSON), help="Path to dataset.json metadata")
     parser.add_argument("--img_dir", type=str, default=str(RAW_IMAGES_DIR), help="Path to raw CT images directory")
     parser.add_argument("--seg_dir", type=str, default=str(RAW_MASKS_DIR), help="Path to raw CT segmentations directory")
@@ -505,11 +505,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb", action="store_true", default=True, help="Enable Weights & Biases logging (default: True)")
     parser.add_argument("--no_wandb", dest="wandb", action="store_false", help="Disable Weights & Biases logging")
     parser.add_argument("--wandb_project", type=str, default="rexgroundingct", help="Weights & Biases project name")
-    parser.add_argument("--wandb_run_name", type=str, default="exp_002_spoco_loss", help="Weights & Biases run name")
+    parser.add_argument("--wandb_run_name", type=str, default="exp_002_pu_mean_teacher", help="Weights & Biases run name")
     return parser.parse_args()
 
 
-def train_spoco_epoch(
+def train_pu_epoch(
     student_model: nn.Module,
     teacher_model: nn.Module,
     dataloader: DataLoader,
@@ -523,10 +523,10 @@ def train_spoco_epoch(
 ) -> tuple[float, float, float, int]:
     """
     Signature:
-        train_spoco_epoch(student_model: nn.Module, teacher_model: nn.Module, dataloader: DataLoader, optimizer: Optimizer, scaler: GradScaler, device: str, w_con: float, pos_weight: float, alpha: float, global_step: int = 0) -> tuple[float, float, float, int]
+        train_pu_epoch(student_model: nn.Module, teacher_model: nn.Module, dataloader: DataLoader, optimizer: Optimizer, scaler: GradScaler, device: str, w_con: float, pos_weight: float, alpha: float, global_step: int = 0) -> tuple[float, float, float, int]
 
     Objective:
-        Execute one training epoch using PU-SPOCO dilated ROI masked supervision + Mean Teacher EMA consistency.
+        Execute one training epoch using PU dilated ROI masked supervision + Mean Teacher EMA consistency.
 
     Inputs:
         student_model (nn.Module): Active Student network model.
@@ -550,7 +550,7 @@ def train_spoco_epoch(
     sup_loss_acc = 0.0
     con_loss_acc = 0.0
     
-    for batch in tqdm(dataloader, desc="Training Epoch (PU-SPOCO)", leave=False):
+    for batch in tqdm(dataloader, desc="Training Epoch (PU Mean Teacher)", leave=False):
         images = batch['image'].to(device)
         targets = batch['seg'].to(device)
         text_embeds = batch['text_embeddings'].to(device)
@@ -570,8 +570,8 @@ def train_spoco_epoch(
             # Compute dilated ROI mask
             roi_mask = compute_roi_mask(targets, kernel_size=11, padding=5)
             
-            # Supervised SPOCO loss strictly within ROI
-            loss_sup = compute_spoco_loss(student_logits.float(), targets.float(), roi_mask, pos_weight=pos_weight)
+            # Supervised loss strictly within ROI
+            loss_sup = compute_roi_masked_loss(student_logits.float(), targets.float(), roi_mask, pos_weight=pos_weight)
             
             # Consistency regularization on unannotated voxels
             loss_con = compute_unannotated_consistency_loss(student_probs.float(), teacher_probs.float(), roi_mask)
@@ -616,7 +616,7 @@ def main() -> None:
         main() -> None
 
     Objective:
-        Main entry point for VoxTell Positive-Unlabeled (PU) SPOCO fine-tuning execution.
+        Main entry point for VoxTell Positive-Unlabeled (PU) Mean Teacher fine-tuning execution.
 
     Inputs:
         None
@@ -625,7 +625,7 @@ def main() -> None:
         None
     """
     args = parse_args()
-    logger.info("Starting VoxTell PU-SPOCO Fine-Tuning Pipeline (Exp 002)...")
+    logger.info("Starting VoxTell PU Mean Teacher Fine-Tuning Pipeline (Exp 002)...")
     logger.info(f"Target Device: {args.device}")
     logger.info(f"Epochs: {args.epochs}, LR: {args.lr}, Alpha: {args.alpha}, PosWeight: {args.pos_weight}, PatchSize: {args.patch_size}")
     
@@ -697,7 +697,7 @@ def main() -> None:
     for epoch in range(start_epoch, args.epochs + 1):
         w_con = get_consistency_weight(epoch, max_weight=args.max_consistency_weight, warm_up_epochs=args.consistency_warmup)
         
-        epoch_loss, sup_loss, con_loss, global_step = train_spoco_epoch(
+        epoch_loss, sup_loss, con_loss, global_step = train_pu_epoch(
             student_model=student_model,
             teacher_model=teacher_model,
             dataloader=train_loader,
@@ -756,7 +756,7 @@ def main() -> None:
         import wandb
         wandb.finish()
 
-    logger.info("PU-SPOCO fine-tuning training complete.")
+    logger.info("PU Mean Teacher fine-tuning training complete.")
 
 
 if __name__ == "__main__":

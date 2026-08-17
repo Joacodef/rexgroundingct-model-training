@@ -307,13 +307,13 @@ def compute_roi_mask(seg_target: torch.Tensor, kernel_size: int = 11, padding: i
     return dilated > 0
 
 
-def compute_spoco_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mask: torch.Tensor, pos_weight: float = 10.0) -> torch.Tensor:
+def compute_roi_masked_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mask: torch.Tensor, pos_weight: float = 10.0) -> torch.Tensor:
     """
     Signature:
-        compute_spoco_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mask: torch.Tensor, pos_weight: float) -> torch.Tensor
+        compute_roi_masked_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mask: torch.Tensor, pos_weight: float) -> torch.Tensor
 
     Objective:
-        Compute SPOCO Masked Supervised Loss (BCE + Dice) strictly confined within the dilated ROI mask.
+        Compute ROI-Masked Supervised Loss (BCE + Dice) strictly confined within the dilated ROI mask.
 
     Inputs:
         logits (torch.Tensor): Pre-sigmoid logit tensor of shape (B, F, Z, Y, X).
@@ -546,7 +546,7 @@ def train_mpr_epoch(
         train_mpr_epoch(student_model: nn.Module, teacher_model: nn.Module, dataloader: DataLoader, optimizer: Optimizer, scaler: GradScaler, device: str, w_mpr: float, pos_weight: float, alpha: float, global_step: int = 0) -> tuple[float, float, float, int]
 
     Objective:
-        Execute one training epoch using PU-SPOCO ROI supervision + 3D Multi-Planar Projection (MPR) consistency.
+        Execute one training epoch using PU ROI-masked supervision + 3D Multi-Planar Projection (MPR) consistency.
 
     Inputs:
         student_model (nn.Module): Active Student network model.
@@ -590,8 +590,8 @@ def train_mpr_epoch(
             # Compute dilated ROI mask
             roi_mask = compute_roi_mask(targets, kernel_size=11, padding=5)
             
-            # Supervised SPOCO loss strictly within ROI
-            loss_sup = compute_spoco_loss(student_logits.float(), targets.float(), roi_mask, pos_weight=pos_weight)
+            # Supervised loss strictly within ROI
+            loss_sup = compute_roi_masked_loss(student_logits.float(), targets.float(), roi_mask, pos_weight=pos_weight)
             
             # 3D Multi-Planar Projection (MPR) consistency on unannotated voxels
             loss_mpr = compute_mpr_consistency_loss(student_probs.float(), teacher_probs.float(), roi_mask)

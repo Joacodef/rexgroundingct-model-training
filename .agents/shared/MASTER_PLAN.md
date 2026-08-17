@@ -8,8 +8,8 @@
 > 2. **Phase 2 — Baselines & Preprocessing Audit**:
 >    - **Phase 2A — Statistical / Rule-Based Prior Baseline**: Non-neural prior baseline leveraging Phase 1 empirical data distributions to establish a non-learning lower-bound benchmark.
 >    - **Phase 2B — VoxTell Zero-Shot Baseline & Audit**: Official reorientation pipeline, sliding window tile overlap, per-category continuous logit threshold optimization, and failure mode profiling.
-> 3. **Phase 3 — VoxTell Model Fine-Tuning**: Target VoxTell fine-tuning experiments exploring Naïve Supervised Baseline, Positive-Unlabeled (PU) SPOCO Loss, and Multi-View Pseudo-Label Regularization (MPR) Loss.
-> 4. **Phase 4 — Alternative Architectures & Unbiased Models**: Exploration and zero-leakage training of alternative 3D vision-language grounding models (e.g. SegVol, SAM-Med3D, or Swin UNETR multi-modal backbones) not pre-trained on ReXGroundingCT data.
+> 3. **Phase 3 — VoxTell Model Fine-Tuning**: Target VoxTell fine-tuning experiments exploring Naïve Supervised Baseline, Positive-Unlabeled (PU) Mean Teacher Loss, and Multi-View Pseudo-Label Regularization (MPR) Loss.
+> 4. **Phase 4 — Alternative Architectures & Unbiased Models**: Exploration and zero-leakage training of alternative 3D vision-language grounding models (e.g. SegVol, SAM-Med3D, or Swin UNETR multi-modal backbones) not pre-trained on ReXGroundingCT data, including evaluation of true SPOCO (pixel embeddings with metric learning clustering).
 
 ---
 
@@ -61,7 +61,7 @@
 * **Core Research Scope**:
   * **Targeted Loss Benchmarking**: Evaluate 3 specific loss strategies to address sparse-to-exhaustive annotation disparity on VoxTell:
     * **Exp 001**: Naïve Supervised Baseline (BCE + Dice).
-    * **Exp 002**: Positive-Unlabeled (PU) SPOCO Loss.
+    * **Exp 002**: Positive-Unlabeled (PU) Mean Teacher Loss.
     * **Exp 003**: Multi-View Pseudo-Label Regularization (MPR) Loss.
   * **Fast Volume Acceleration**: Execute training using fast local SSD volume caching.
   * **Dynamic Post-Processing & Ensembling**: Multi-checkpoint ensembling and category-validated post-processing.
@@ -75,6 +75,7 @@
 ### Phase 4: Alternative Architectures & Unbiased Models
 * **Core Research Scope**:
   * **Clean-Slate Architecture Exploration**: Evaluate alternative 3D vision-language grounding models not pre-trained on ReXGroundingCT data.
+  * **True SPOCO Evaluation**: Test metric-learning pixel embedding segmentation with anchor soft masks and clustering (Wolny et al., CVPR 2022) on compatible clean-slate architectures.
   * **Comparative Cross-Architecture Benchmark**: Systematic benchmark comparing VoxTell against clean-slate 3D grounding backbones to isolate pre-training bias vs. architectural strength.
 
 * **Key Deliverables**:

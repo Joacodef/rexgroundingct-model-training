@@ -348,9 +348,9 @@ def compute_roi_mask(seg_target, kernel_size=11, padding=5):
     return dilated > 0
 
 
-def compute_spoco_loss(logits, targets, roi_mask, pos_weight=1.0):
+def compute_roi_masked_loss(logits, targets, roi_mask, pos_weight=1.0):
     """
-    SPOCO Masked Supervised Loss. Confines BCE and Dice losses strictly within the dilated ROI.
+    ROI-Masked Supervised Loss. Confines BCE and Dice losses strictly within the dilated ROI.
     """
     dtype = logits.dtype
     # 1. BCE Loss confined to the dilated mask with class-weighted positives
@@ -558,7 +558,7 @@ def main():
                 val_logits = predictor.predict_sliding_window_return_logits(image, text_embeddings).to(device)
                 
                 val_roi_mask = compute_roi_mask(seg_target[None], kernel_size=11, padding=5)
-                loss = compute_spoco_loss(val_logits[None], seg_target[None], val_roi_mask, pos_weight=args.pos_weight)
+                loss = compute_roi_masked_loss(val_logits[None], seg_target[None], val_roi_mask, pos_weight=args.pos_weight)
                 val_loss += loss.item()
                 
                 dice = compute_dice_score(val_logits[None], seg_target[None])
@@ -620,7 +620,7 @@ def main():
                     
                 # Compute ROI Mask and Semi-Supervised Losses
                 roi_mask = compute_roi_mask(seg_target, kernel_size=11, padding=5)
-                loss_sup = compute_spoco_loss(student_logits, seg_target, roi_mask, pos_weight=args.pos_weight)
+                loss_sup = compute_roi_masked_loss(student_logits, seg_target, roi_mask, pos_weight=args.pos_weight)
                 loss_con = compute_mpr_consistency_loss(student_probs, teacher_probs, roi_mask)
                 
                 # Total loss

@@ -13,6 +13,7 @@ USAGE:          python scripts/phase_3_voxtell_training/exp_001_naive_finetuning
 import os
 import sys
 import json
+import math
 import hashlib
 import argparse
 import logging
@@ -346,11 +347,13 @@ def train_naive_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch
     """
     model.train()
     running_loss = 0.0
+    valid_batches = 0
     
     for batch in tqdm(dataloader, desc="Training Epoch", leave=False):
         images = batch['image'].to(device) # (B, 1, Z, Y, X)
         targets = batch['seg'].to(device)   # (B, F, Z, Y, X)
         text_embeds = batch['text_embeddings'].to(device) # (B, F, 2560)
+        scan_id = batch.get('scan_id', ['unknown'])[0]
         
         optimizer.zero_grad()
         
@@ -366,13 +369,25 @@ def train_naive_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch
             loss_dice = dice_criterion(logits_f32, targets_f32)
             total_loss = loss_bce + loss_dice
         
+        if not torch.isfinite(total_loss):
+            logger.warning(f"Scan {scan_id} produced non-finite loss (BCE={loss_bce.item()}, Dice={loss_dice.item()}). Skipping step.")
+            continue
+            
         scaler.scale(total_loss).backward()
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        # Check gradient finiteness before clipping to prevent NaN corruption
+        grads_finite = all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+        if grads_finite:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        else:
+            logger.warning(f"Scan {scan_id} produced non-finite gradients. Skipping grad clipping and letting scaler adapt.")
+            
         scaler.step(optimizer)
         scaler.update()
         
         running_loss += total_loss.item()
+        valid_batches += 1
         global_step += 1
 
         try:
@@ -387,7 +402,7 @@ def train_naive_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch
         except Exception:
             pass
         
-    return running_loss / max(len(dataloader), 1), global_step
+    return running_loss / max(valid_batches, 1), global_step
 
 
 def load_voxtell_model(model_dir: str, device: str) -> nn.Module:
@@ -556,7 +571,7 @@ def main() -> None:
         }, latest_model_path)
 
         # Save best model checkpoint based on training loss
-        if epoch_loss < best_loss:
+        if math.isfinite(epoch_loss) and epoch_loss < best_loss:
             best_loss = epoch_loss
             best_model_path = output_dir / "best_model.pt"
             torch.save({

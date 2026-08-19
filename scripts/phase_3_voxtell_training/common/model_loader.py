@@ -19,10 +19,10 @@ from voxtell.model.voxtell_model import VoxTellModel
 logger = logging.getLogger("phase_3_model_loader")
 
 
-def load_voxtell_model(model_dir: str, device: str) -> nn.Module:
+def load_voxtell_model(model_dir: str, device: str, deep_supervision: bool = True) -> nn.Module:
     """
     Signature:
-        load_voxtell_model(model_dir: str, device: str) -> nn.Module
+        load_voxtell_model(model_dir: str, device: str, deep_supervision: bool) -> nn.Module
 
     Objective:
         Load plans.json architectural hyperparameters and instantiate VoxTellModel,
@@ -31,6 +31,7 @@ def load_voxtell_model(model_dir: str, device: str) -> nn.Module:
     Inputs:
         model_dir (str): Directory containing plans.json and checkpoint_final.pth.
         device (str): Computation device string (e.g. 'cuda:0').
+        deep_supervision (bool): Whether to enable multi-scale deep supervision in decoder. Default True.
 
     Outputs:
         nn.Module: Loaded VoxTellModel instance placed on device.
@@ -59,7 +60,7 @@ def load_voxtell_model(model_dir: str, device: str) -> nn.Module:
         num_heads=32,
         query_dim=2048,
         project_to_decoder_hidden_dim=2048,
-        deep_supervision=False
+        deep_supervision=deep_supervision
     )
     
     ckpt_path = model_dir_path / "fold_0" / "checkpoint_final.pth"
@@ -75,3 +76,4 @@ def load_voxtell_model(model_dir: str, device: str) -> nn.Module:
         logger.warning(f"Pre-trained checkpoint not found at {ckpt_path}. Initializing from scratch.")
         
     return model.to(device)
+

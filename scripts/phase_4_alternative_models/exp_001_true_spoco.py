@@ -114,6 +114,7 @@ class ReXSpocoDataset(Dataset):
         cache_dir: Optional[Path] = CACHE_DIR,
         is_train: bool = True,
     ) -> None:
+        """Initialize SPOCO dataset with cache configuration and split samples."""
         self.split = split
         self.patch_size = patch_size
         self.cache_dir = cache_dir
@@ -230,6 +231,7 @@ class TextCrossAttentionBottleneck(nn.Module):
     """
 
     def __init__(self, spatial_dim: int = 256, text_dim: int = 2560, num_heads: int = 8) -> None:
+        """Initialize cross-attention module between spatial and text feature embeddings."""
         super().__init__()
         self.spatial_dim = spatial_dim
         self.text_proj = nn.Linear(text_dim, spatial_dim)
@@ -307,6 +309,7 @@ class SpocoUNet3D(nn.Module):
         text_dim: int = 2560,
         feature_channels: Tuple[int, ...] = (32, 64, 128, 256),
     ) -> None:
+        """Initialize 3D SPOCO U-Net architecture."""
         super().__init__()
         self.embedding_dim = embedding_dim
         c0, c1, c2, c3 = feature_channels

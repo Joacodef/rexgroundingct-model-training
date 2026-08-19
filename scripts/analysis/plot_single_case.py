@@ -178,10 +178,24 @@ def create_scan_zip_bundle(scan_id: str, img_path: Path, gt_path: Path, pred_pat
     Returns:
         Path: Path to saved ZIP archive file.
     """
-    img_nii = nib.load(str(img_path)) if img_path.exists() else None
-    img_affine = img_nii.affine if img_nii is not None else None
+    img_data, img_nii_ras, _ = load_nifti_ras(img_path) if img_path.exists() else (None, None, None)
+    img_affine = img_nii_ras.affine if img_nii_ras is not None else None
 
     def _convert_4d_to_3d_nii(nii_path: Path, base_affine: np.ndarray):
+        """
+        Signature:
+            _convert_4d_to_3d_nii(nii_path: Path, base_affine: np.ndarray) -> tuple
+
+        Objective:
+            Convert a 4D finding mask volume into a 3D labeled composite array and per-finding dict.
+
+        Inputs:
+            nii_path (Path): Path to 4D NIfTI mask file.
+            base_affine (np.ndarray): Target reference affine matrix.
+
+        Outputs:
+            tuple: (combined_3d, per_finding_3d, affine)
+        """
         if not nii_path.exists():
             return None, {}, None
         data, nii_ras, _ = load_nifti_ras(nii_path)
@@ -202,8 +216,7 @@ def create_scan_zip_bundle(scan_id: str, img_path: Path, gt_path: Path, pred_pat
         else:
             return None, {}, None
 
-        comb_nii = nib.Nifti1Image(combined_3d, affine)
-        return comb_nii, per_finding_3d, affine
+        return combined_3d, per_finding_3d, affine
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
@@ -211,30 +224,28 @@ def create_scan_zip_bundle(scan_id: str, img_path: Path, gt_path: Path, pred_pat
             if img_path.exists():
                 zipf.write(img_path, arcname=f"{scan_id}.nii.gz")
 
-            gt_3d_nii, gt_findings, affine_gt = _convert_4d_to_3d_nii(gt_path, img_affine)
-            if gt_3d_nii is not None:
+            gt_combined, gt_findings, affine_gt = _convert_4d_to_3d_nii(gt_path, img_affine)
+            if gt_combined is not None:
                 gt_3d_file = tmp_path / f"{scan_id}_gt.nii.gz"
-                nib.save(gt_3d_nii, str(gt_3d_file))
+                save_nifti(gt_combined, gt_3d_file, affine=affine_gt)
                 zipf.write(gt_3d_file, arcname=f"{scan_id}_gt.nii.gz")
 
                 if len(gt_findings) > 1:
                     for f_idx, f_mask in gt_findings.items():
-                        f_nii = nib.Nifti1Image(f_mask, affine_gt)
                         f_file = tmp_path / f"{scan_id}_gt_finding_{f_idx}.nii.gz"
-                        nib.save(f_nii, str(f_file))
+                        save_nifti(f_mask, f_file, affine=affine_gt)
                         zipf.write(f_file, arcname=f"{scan_id}_gt_finding_{f_idx}.nii.gz")
 
-            pred_3d_nii, pred_findings, affine_pred = _convert_4d_to_3d_nii(pred_path, img_affine)
-            if pred_3d_nii is not None:
+            pred_combined, pred_findings, affine_pred = _convert_4d_to_3d_nii(pred_path, img_affine)
+            if pred_combined is not None:
                 pred_3d_file = tmp_path / f"{scan_id}_pred.nii.gz"
-                nib.save(pred_3d_nii, str(pred_3d_file))
+                save_nifti(pred_combined, pred_3d_file, affine=affine_pred)
                 zipf.write(pred_3d_file, arcname=f"{scan_id}_pred.nii.gz")
 
                 if len(pred_findings) > 1:
                     for f_idx, f_mask in pred_findings.items():
-                        f_nii = nib.Nifti1Image(f_mask, affine_pred)
                         f_file = tmp_path / f"{scan_id}_pred_finding_{f_idx}.nii.gz"
-                        nib.save(f_nii, str(f_file))
+                        save_nifti(f_mask, f_file, affine=affine_pred)
                         zipf.write(f_file, arcname=f"{scan_id}_pred_finding_{f_idx}.nii.gz")
 
             if gt_path.exists():
@@ -320,10 +331,8 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
     gt_path = RAW_MASKS_DIR / f"{scan_id}.nii.gz"
     pred_path = pred_dir / f"{scan_id}.nii.gz"
 
-    raw_img_nii = nib.load(str(img_path)) if img_path.exists() else None
-    raw_img_affine = raw_img_nii.affine if raw_img_nii is not None else None
-
     img_4d, img_nii_ras, _ = load_nifti_ras(img_path)
+    raw_img_affine = img_nii_ras.affine if img_nii_ras is not None else None
     if img_4d.ndim == 3:
         img_4d = np.expand_dims(img_4d, axis=0)
 
@@ -406,6 +415,24 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
 
         # Helper to plot 2D slice overlay
         def plot_2d_pathology_slice(ax, ct_slice, gt_s, pred_s, title_str, aspect='auto'):
+            """
+            Signature:
+                plot_2d_pathology_slice(ax, ct_slice, gt_s, pred_s, title_str, aspect) -> None
+
+            Objective:
+                Render a 2D CT slice with colored GT (green) and predicted (red) segmentation overlays.
+
+            Inputs:
+                ax (matplotlib.axes.Axes): Target subplot axis.
+                ct_slice (np.ndarray): 2D CT image slice array.
+                gt_s (np.ndarray): 2D ground truth binary mask slice.
+                pred_s (np.ndarray): 2D predicted binary mask slice.
+                title_str (str): Subplot title string.
+                aspect (str|float): Aspect ratio for imshow.
+
+            Outputs:
+                None
+            """
             ct_norm = np.clip(ct_slice, row_vmin, row_vmax)
             ct_norm = (ct_norm - row_vmin) / (row_vmax - row_vmin)
 

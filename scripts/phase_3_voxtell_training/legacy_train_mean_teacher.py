@@ -32,17 +32,13 @@ from nnunetv2.preprocessing.cropping.cropping import crop_to_nonzero
 from nnunetv2.preprocessing.normalization.default_normalization_schemes import ZScoreNormalization
 
 
+from scripts.common.orientation import load_nifti_ras
+
 # Import VoxTell dependencies
 from voxtell.model.voxtell_model import VoxTellModel
 from voxtell.inference.predictor import VoxTellPredictor
 
 
-class ReXDataset(Dataset):
-    """
-    Native Resolution 3D CT Dataset for ReXGroundingCT fine-tuning.
-    Loads images and 4D segmentations in native RAS space, crops non-zero regions,
-    and applies MONAI patch-based cropping and augmentations.
-    """
 class ReXDataset(Dataset):
     """
     Native Resolution 3D CT Dataset for ReXGroundingCT fine-tuning.
@@ -168,17 +164,15 @@ class ReXDataset(Dataset):
             img_normalized = torch.load(cache_img_path, map_location='cpu')
             seg_cropped = torch.load(cache_seg_path, map_location='cpu')
         else:
-            # 1. Load image and reorient to RAS using Nibabel
-            nib_img = nib.load(img_path)
-            from nibabel.orientations import io_orientation
-            img_ornt = io_orientation(nib_img.affine)
-            img_r = nib_img.as_reoriented(img_ornt)
-            img_data = img_r.get_fdata().transpose((2, 1, 0))[None] # shape: (1, Z, Y, X)
+            # 1. Load image and reorient to RAS using centralized orientation engine
+            img_ras_data, _, _ = load_nifti_ras(img_path)
+            # Reorder to (1, Z, Y, X)
+            img_data = np.ascontiguousarray(img_ras_data.transpose((2, 1, 0))[None])
             
             # 2. Load 4D segmentation mask
-            nib_seg = nib.load(seg_path)
-            seg_r = nib_seg.as_reoriented(img_ornt)
-            seg_data = seg_r.get_fdata().transpose((0, 3, 2, 1)) # shape: (F, Z, Y, X)
+            seg_ras_data, _, _ = load_nifti_ras(seg_path)
+            # Reorder to (F, Z, Y, X)
+            seg_data = np.ascontiguousarray(seg_ras_data.transpose((0, 3, 2, 1)))
             
             # 3. Perform cropping to non-zero region of the image
             img_data = img_data.astype(np.float32)
@@ -728,6 +722,19 @@ def main():
         )
 
     def run_validation(epoch_idx):
+        """
+        Signature:
+            run_validation(epoch_idx: int) -> tuple[float, float]
+
+        Objective:
+            Run validation loop over validation loader and compute average validation loss and Dice.
+
+        Inputs:
+            epoch_idx (int): Current training epoch index.
+
+        Outputs:
+            tuple[float, float]: (mean_val_loss, mean_val_dice)
+        """
         student_model.eval()
         val_loss = 0.0
         val_dice = 0.0

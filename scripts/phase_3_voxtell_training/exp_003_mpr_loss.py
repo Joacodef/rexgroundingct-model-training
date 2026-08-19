@@ -49,9 +49,11 @@ from scripts.phase_3_voxtell_training.common import (
     cleanup_distributed,
     setup_distributed_logger,
     get_unwrapped_state_dict,
+    ddp_step,
     ReXDataset,
     load_voxtell_model
 )
+
 
 # Setup experiment logging directory
 EXP_LOG_DIR = LOGS_DIR / "phase_3_voxtell_training" / "exp_003_mpr_loss"
@@ -97,13 +99,14 @@ def compute_roi_masked_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mas
         torch.Tensor: Scalar loss tensor (BCE_masked + Dice_masked).
     """
     dtype = logits.dtype
+    logits_clamped = torch.clamp(logits.float(), min=-30.0, max=30.0).to(dtype=dtype)
     # 1. BCE Loss confined to dilated ROI mask with class-weighted positives
     pos_weight_tensor = torch.tensor([pos_weight], device=logits.device, dtype=dtype)
-    bce = F.binary_cross_entropy_with_logits(logits, targets.to(dtype=dtype), pos_weight=pos_weight_tensor, reduction='none')
+    bce = F.binary_cross_entropy_with_logits(logits_clamped, targets.to(dtype=dtype), pos_weight=pos_weight_tensor, reduction='none')
     bce_masked = (bce * roi_mask.to(dtype=dtype)).sum().float() / (roi_mask.to(dtype=dtype).sum().float() + 1e-6)
     
     # 2. Dice Loss confined to dilated ROI mask
-    probs = torch.sigmoid(logits)
+    probs = torch.sigmoid(logits_clamped)
     probs_masked = probs * roi_mask.to(dtype=dtype)
     targets_masked = targets.to(dtype=dtype) * roi_mask.to(dtype=dtype)
     
@@ -112,6 +115,7 @@ def compute_roi_masked_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mas
     dice = 1.0 - (2.0 * intersection + 1e-6) / (union + 1e-6)
     
     return bce_masked + dice.mean()
+
 
 
 def compute_mpr_consistency_loss(student_probs: torch.Tensor, teacher_probs: torch.Tensor, roi_mask: torch.Tensor) -> torch.Tensor:
@@ -323,30 +327,28 @@ def train_mpr_epoch(
             # Combined total loss
             total_loss = loss_sup + w_mpr * loss_mpr
             
-        if not torch.isfinite(total_loss):
-            logger.warning(f"Scan {scan_id} on Rank {rank} produced non-finite loss (Sup={loss_sup.item()}, MPR={loss_mpr.item()}). Skipping step.")
-            continue
-
-        scaler.scale(total_loss).backward()
-        scaler.unscale_(optimizer)
+        step_ok = ddp_step(
+            total_loss=total_loss,
+            model=student_model,
+            optimizer=optimizer,
+            scaler=scaler,
+            is_distributed=is_distributed,
+            max_norm=1.0,
+            logger=logger,
+            scan_id=scan_id,
+            rank=rank
+        )
         
-        grads_finite = all(torch.isfinite(p.grad).all() for p in student_model.parameters() if p.grad is not None)
-        if grads_finite:
-            torch.nn.utils.clip_grad_norm_(student_model.parameters(), max_norm=1.0)
-        else:
-            logger.warning(f"Scan {scan_id} on Rank {rank} produced non-finite gradients. Skipping grad clipping.")
+        if step_ok:
+            # Synchronize Teacher parameters via EMA
+            update_ema_variables(student_model, teacher_model, alpha)
             
-        scaler.step(optimizer)
-        scaler.update()
-        
-        # Synchronize Teacher parameters via EMA
-        update_ema_variables(student_model, teacher_model, alpha)
-        
-        total_loss_acc += total_loss.item()
-        sup_loss_acc += loss_sup.item()
-        mpr_loss_acc += loss_mpr.item()
-        valid_batches += 1
-        global_step += 1
+            total_loss_acc += total_loss.item()
+            sup_loss_acc += loss_sup.item()
+            mpr_loss_acc += loss_mpr.item()
+            valid_batches += 1
+            global_step += 1
+
 
         if rank == 0:
             try:
@@ -442,10 +444,10 @@ def main() -> None:
         
         # Instantiate Student and Teacher Models
         logger.info("Instantiating Student VoxTell network...")
-        student_model = load_voxtell_model(args.model_dir, target_device)
+        student_model = load_voxtell_model(args.model_dir, target_device, deep_supervision=False)
         
         logger.info("Instantiating Teacher VoxTell network...")
-        teacher_model = load_voxtell_model(args.model_dir, target_device)
+        teacher_model = load_voxtell_model(args.model_dir, target_device, deep_supervision=False)
         for param in teacher_model.parameters():
             param.requires_grad = False
             

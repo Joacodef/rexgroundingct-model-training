@@ -21,8 +21,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 PARENT_DIR = ROOT_DIR.parent
 
 # 3. Base Directory Definitions
-# Check parent container directory (/home/.../rex_project) for shared data and models folders
-DATA_DIR = Path(os.getenv("DATA_DIR") or (PARENT_DIR / "data" if (PARENT_DIR / "data").exists() else ROOT_DIR / "data"))
+# Shared data and models folders located at parent directory (/home/.../rex_project/data)
+DATA_DIR = Path(os.getenv("DATA_DIR") or (PARENT_DIR / "data"))
 MODELS_DIR = Path(os.getenv("MODELS_DIR") or (PARENT_DIR / "models" if (PARENT_DIR / "models").exists() else ROOT_DIR / "models"))
 LOGS_DIR = ROOT_DIR / "logs"
 SCRATCH_DIR = ROOT_DIR / "scratch"
@@ -30,6 +30,7 @@ VISUALIZATIONS_DIR = ROOT_DIR / "scan_visualizations"
 
 # 4. Core Dataset & Asset Paths (Env Override -> Fallback to project relative default)
 DATASET_JSON = Path(os.getenv("DATASET_JSON") or (DATA_DIR / "dataset.json"))
+DATASET_MINI_JSON = Path(os.getenv("DATASET_MINI_JSON") or (DATA_DIR / "dataset_mini.json"))
 RAW_IMAGES_DIR = Path(os.getenv("IMG_RAW_DIR") or (DATA_DIR / "raw" / "images"))
 RAW_MASKS_DIR = Path(os.getenv("SEG_RAW_DIR") or (DATA_DIR / "raw" / "segmentations"))
 PREPROCESSED_DIR = Path(os.getenv("DATA_PREP_DIR") or (DATA_DIR / "preprocessed"))

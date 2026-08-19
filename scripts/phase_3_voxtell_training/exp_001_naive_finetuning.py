@@ -1,12 +1,16 @@
 """
 ===============================================================================
-SCRIPT:         VoxTell Naïve Supervised Fine-Tuning Baseline
+SCRIPT:         VoxTell Supervised Fine-Tuning Baseline (Official Protocol Aligned)
 PHASE:          Phase 3 — Model Fine-Tuning & Adaptation
 LOCATION:       scripts/phase_3_voxtell_training/exp_001_naive_finetuning.py
-OBJECTIVE:      Naïve supervised fine-tuning of VoxTell baseline (voxtell_v1.1) 
-                using standard BCE + Dice loss on 3D CT volume patches from the 
-                2,992-scan training split. Supports server-agnostic multi-GPU (DDP)
-                and single-GPU execution. Establishes the supervised lower bound.
+OBJECTIVE:      Supervised fine-tuning of VoxTell baseline (voxtell_v1.1) 
+                aligned with the official publication training protocol:
+                - Multi-scale deep supervision across 5 decoder stages (weights [1, 1/2, 1/4, 1/8, 1/16])
+                - 2 Positive + 1 Negative prompt sampling with all-zero negative targets
+                - 85% foreground lesion oversampling / 15% background sampling
+                - Anatomical laterality preserved (Left-Right mirroring disabled)
+                - SGD with Nesterov momentum (0.99) and polynomial learning rate schedule
+                - Multi-GPU DDP synchronized gradient finiteness guards (ddp_step)
 USAGE:          Single-GPU: python scripts/phase_3_voxtell_training/exp_001_naive_finetuning.py
                 Multi-GPU:  torchrun --nproc_per_node=N scripts/phase_3_voxtell_training/exp_001_naive_finetuning.py
 ===============================================================================
@@ -26,6 +30,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
@@ -49,6 +54,7 @@ from scripts.phase_3_voxtell_training.common import (
     cleanup_distributed,
     setup_distributed_logger,
     get_unwrapped_state_dict,
+    ddp_step,
     ReXDataset,
     load_voxtell_model
 )
@@ -65,7 +71,7 @@ def parse_args() -> argparse.Namespace:
         parse_args() -> argparse.Namespace
 
     Objective:
-        Parse command line arguments for naïve fine-tuning execution.
+        Parse command line arguments for supervised fine-tuning execution.
 
     Inputs:
         None
@@ -73,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     Outputs:
         argparse.Namespace: Parsed CLI arguments.
     """
-    parser = argparse.ArgumentParser(description="VoxTell Naïve Supervised Fine-Tuning Baseline")
+    parser = argparse.ArgumentParser(description="VoxTell Supervised Fine-Tuning Baseline (Official Protocol Aligned)")
     parser.add_argument("--dataset_json", type=str, default=str(DATASET_JSON), help="Path to dataset.json metadata")
     parser.add_argument("--img_dir", type=str, default=str(RAW_IMAGES_DIR), help="Path to raw CT images directory")
     parser.add_argument("--seg_dir", type=str, default=str(RAW_MASKS_DIR), help="Path to raw CT segmentations directory")
@@ -83,9 +89,14 @@ def parse_args() -> argparse.Namespace:
     
     parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size per GPU")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay for AdamW")
-    parser.add_argument("--patch_size", type=int, default=192, help="Patch size for MONAI spatial crop")
+    parser.add_argument("--optimizer", type=str, default="sgd", choices=["sgd", "adamw"], help="Optimizer type (default: sgd per official paper)")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate (default: 1e-4)")
+    parser.add_argument("--momentum", type=float, default=0.99, help="Momentum for SGD (default: 0.99)")
+    parser.add_argument("--weight_decay", type=float, default=3e-5, help="Weight decay (default: 3e-5)")
+    parser.add_argument("--patch_size", type=int, default=192, help="Patch size for MONAI spatial crop (default: 192)")
+    parser.add_argument("--num_pos_prompts", type=int, default=2, help="Number of positive prompts per volume (default: 2)")
+    parser.add_argument("--num_neg_prompts", type=int, default=1, help="Number of negative prompts per volume (default: 1)")
+    parser.add_argument("--pos_ratio", type=float, default=0.85, help="Foreground patch sampling probability (default: 0.85)")
     parser.add_argument("--device", type=str, default="cuda:0", help="Computation device for standalone run (e.g. cuda:0)")
     parser.add_argument("--num_workers", type=int, default=2, help="Number of DataLoader workers per GPU")
     parser.add_argument("--resume", action="store_true", help="Resume training from latest_model.pt if available")
@@ -96,7 +107,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def train_naive_epoch(
+def train_epoch(
     model: nn.Module, 
     dataloader: DataLoader, 
     optimizer: torch.optim.Optimizer, 
@@ -111,15 +122,15 @@ def train_naive_epoch(
 ) -> tuple[float, int]:
     """
     Signature:
-        train_naive_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, device: str, bce_criterion: nn.Module, dice_criterion: nn.Module, global_step: int, rank: int, world_size: int, is_distributed: bool) -> tuple[float, int]
+        train_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, device: str, bce_criterion: nn.Module, dice_criterion: nn.Module, global_step: int, rank: int, world_size: int, is_distributed: bool) -> tuple[float, int]
 
     Objective:
-        Execute one training epoch using naïve supervised BCE + Dice loss with DDP synchronization.
+        Execute one training epoch using multi-scale deep supervision BCE + Dice loss with DDP synchronization.
 
     Inputs:
         model (nn.Module): VoxTell model instance (or DDP wrapped model).
         dataloader (DataLoader): PyTorch training DataLoader.
-        optimizer (Optimizer): PyTorch AdamW optimizer.
+        optimizer (Optimizer): PyTorch optimizer (SGD / AdamW).
         scaler (GradScaler): AMP Gradient Scaler.
         device (str): Computation device string.
         bce_criterion (nn.Module): BCEWithLogitsLoss instance.
@@ -136,46 +147,73 @@ def train_naive_epoch(
     running_loss = 0.0
     valid_batches = 0
     
+    # Official nnU-Net deep supervision scale weights
+    raw_scale_weights = [1.0, 0.5, 0.25, 0.125, 0.0625]
+    
     for batch in tqdm(dataloader, desc="Training Epoch", leave=False, disable=(rank != 0)):
         images = batch['image'].to(device) # (B, 1, Z, Y, X)
-        targets = batch['seg'].to(device)   # (B, F, Z, Y, X)
-        text_embeds = batch['text_embeddings'].to(device) # (B, F, 2560)
+        targets = batch['seg'].to(device)   # (B, N_prompts, Z, Y, X)
+        text_embeds = batch['text_embeddings'].to(device) # (B, N_prompts, 2560)
         scan_id = batch.get('scan_id', ['unknown'])[0]
         
         optimizer.zero_grad()
         
         with torch.amp.autocast('cuda'):
-            # VoxTell forward pass
-            logits = model(images, text_embeds) # (B, F, Z, Y, X)
+            # VoxTell forward pass with deep supervision
+            outputs = model(images, text_embeds)
             
-            # Upcast logits and targets to float32 for loss stability
-            logits_f32 = logits.float()
-            targets_f32 = targets.float()
-            
-            loss_bce = bce_criterion(logits_f32, targets_f32)
-            loss_dice = dice_criterion(logits_f32, targets_f32)
-            total_loss = loss_bce + loss_dice
+            if isinstance(outputs, (list, tuple)):
+                n_scales = len(outputs)
+                weights = raw_scale_weights[:n_scales]
+                w_sum = sum(weights)
+                norm_weights = [w / w_sum for w in weights]
+                
+                total_loss = 0.0
+                step_bce_sum = 0.0
+                step_dice_sum = 0.0
+                
+                for s_idx, (s_logits, w) in enumerate(zip(outputs, norm_weights)):
+                    s_logits_f32 = torch.clamp(s_logits.float(), min=-30.0, max=30.0)
+                    
+                    if s_logits_f32.shape[2:] != targets.shape[2:]:
+                        s_target = F.interpolate(
+                            targets.float(),
+                            size=s_logits_f32.shape[2:],
+                            mode='nearest'
+                        )
+                    else:
+                        s_target = targets.float()
+                        
+                    s_bce = bce_criterion(s_logits_f32, s_target)
+                    s_dice = dice_criterion(s_logits_f32, s_target)
+                    s_loss = s_bce + s_dice
+                    
+                    total_loss = total_loss + w * s_loss
+                    step_bce_sum = step_bce_sum + w * s_bce
+                    step_dice_sum = step_dice_sum + w * s_dice
+            else:
+                logits_f32 = torch.clamp(outputs.float(), min=-30.0, max=30.0)
+                targets_f32 = targets.float()
+                step_bce_sum = bce_criterion(logits_f32, targets_f32)
+                step_dice_sum = dice_criterion(logits_f32, targets_f32)
+                total_loss = step_bce_sum + step_dice_sum
         
-        if not torch.isfinite(total_loss):
-            logger.warning(f"Scan {scan_id} on Rank {rank} produced non-finite loss (BCE={loss_bce.item()}, Dice={loss_dice.item()}). Skipping step.")
-            continue
-            
-        scaler.scale(total_loss).backward()
-        scaler.unscale_(optimizer)
+        step_ok = ddp_step(
+            total_loss=total_loss,
+            model=model,
+            optimizer=optimizer,
+            scaler=scaler,
+            is_distributed=is_distributed,
+            max_norm=1.0,
+            logger=logger,
+            scan_id=scan_id,
+            rank=rank
+        )
         
-        # Check gradient finiteness before clipping to prevent NaN corruption
-        grads_finite = all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
-        if grads_finite:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        else:
-            logger.warning(f"Scan {scan_id} on Rank {rank} produced non-finite gradients. Skipping grad clipping.")
-            
-        scaler.step(optimizer)
-        scaler.update()
-        
-        running_loss += total_loss.item()
-        valid_batches += 1
-        global_step += 1
+        if step_ok:
+            running_loss += total_loss.item()
+            valid_batches += 1
+            global_step += 1
 
         if rank == 0:
             try:
@@ -183,8 +221,8 @@ def train_naive_epoch(
                 if wandb.run is not None and global_step % 5 == 0:
                     wandb.log({
                         "train/step_loss": total_loss.item(),
-                        "train/step_bce": loss_bce.item(),
-                        "train/step_dice": loss_dice.item(),
+                        "train/step_bce": step_bce_sum.item() if torch.is_tensor(step_bce_sum) else step_bce_sum,
+                        "train/step_dice": step_dice_sum.item() if torch.is_tensor(step_dice_sum) else step_dice_sum,
                         "step": global_step
                     })
             except Exception:
@@ -209,7 +247,7 @@ def main() -> None:
         main() -> None
 
     Objective:
-        Main entry point for VoxTell naïve supervised fine-tuning execution supporting
+        Main entry point for VoxTell supervised fine-tuning execution supporting
         both standalone single-GPU and torchrun multi-GPU modes.
 
     Inputs:
@@ -223,16 +261,17 @@ def main() -> None:
     target_device = default_device if is_distributed else args.device
 
     setup_distributed_logger(logger, EXP_LOG_DIR, rank)
-    logger.info("Starting VoxTell Naïve Supervised Fine-Tuning Pipeline (Exp 001)...")
+    logger.info("Starting VoxTell Supervised Fine-Tuning Pipeline (Exp 001 - Protocol Aligned)...")
     logger.info(f"Execution Mode: {'Distributed (DDP)' if is_distributed else 'Single-Device'} | Rank: {rank}/{world_size} | Device: {target_device}")
-    logger.info(f"Epochs: {args.epochs}, LR: {args.lr}, Batch Size / GPU: {args.batch_size}, Patch Size: {args.patch_size}")
+    logger.info(f"Epochs: {args.epochs}, Optimizer: {args.optimizer.upper()}, LR: {args.lr}, Batch Size / GPU: {args.batch_size}, Patch Size: {args.patch_size}")
+    logger.info(f"Prompts: {args.num_pos_prompts} Pos + {args.num_neg_prompts} Neg | Foreground Ratio: {args.pos_ratio}")
     
     output_dir = Path(args.output_dir)
     if rank == 0:
         output_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        # Initialize Dataset
+        # Initialize Dataset with official prompt sampling and laterality-safe transforms
         train_dataset = ReXDataset(
             dataset_json=args.dataset_json,
             split="train",
@@ -240,7 +279,10 @@ def main() -> None:
             seg_dir=args.seg_dir,
             cache_dir=args.cache_dir,
             is_train=True,
-            patch_size=args.patch_size
+            patch_size=args.patch_size,
+            num_positive_prompts=args.num_pos_prompts,
+            num_negative_prompts=args.num_neg_prompts,
+            pos_ratio=args.pos_ratio
         )
         
         # Configure Sampler and DataLoader
@@ -271,12 +313,35 @@ def main() -> None:
         
         logger.info(f"Loaded training split: {len(train_dataset)} total scans.")
         
-        # Instantiate VoxTell Model and load pre-trained weights
-        model = load_voxtell_model(args.model_dir, target_device)
+        # Instantiate VoxTell Model with Deep Supervision enabled
+        model = load_voxtell_model(args.model_dir, target_device, deep_supervision=True)
         
-        # Optimizer, Loss Criteria, and Scaler
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+        # Configure Optimizer & Scheduler (SGD with Nesterov momentum per paper)
+        if args.optimizer == "sgd":
+            optimizer = torch.optim.SGD(
+                model.parameters(),
+                lr=args.lr,
+                momentum=args.momentum,
+                weight_decay=args.weight_decay,
+                nesterov=True
+            )
+            scheduler = torch.optim.lr_scheduler.PolynomialLR(
+                optimizer,
+                total_iters=args.epochs,
+                power=0.9
+            )
+        else:
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=args.lr,
+                weight_decay=args.weight_decay
+            )
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=args.epochs,
+                eta_min=1e-6
+            )
+            
         scaler = torch.amp.GradScaler('cuda')
         
         bce_criterion = nn.BCEWithLogitsLoss()
@@ -321,7 +386,7 @@ def main() -> None:
             if train_sampler is not None:
                 train_sampler.set_epoch(epoch)
                 
-            epoch_loss, global_step = train_naive_epoch(
+            epoch_loss, global_step = train_epoch(
                 model=model,
                 dataloader=train_loader,
                 optimizer=optimizer,
@@ -375,7 +440,7 @@ def main() -> None:
             import wandb
             wandb.finish()
 
-        logger.info("Naïve supervised fine-tuning training complete.")
+        logger.info("Supervised fine-tuning training complete.")
 
     finally:
         cleanup_distributed()

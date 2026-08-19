@@ -4,7 +4,8 @@ MODULE:         Dataset and Caching Infrastructure for Phase 3
 LOCATION:       scripts/phase_3_voxtell_training/common/dataset.py
 OBJECTIVE:      Provide native-resolution 3D CT dataset loader with MONAI 
                 spatial cropping, intensity Z-score normalization, atomic fast 
-                RAID SSD volume caching, and pre-computed text embeddings.
+                RAID SSD volume caching, 85% foreground sampling, laterality-safe 
+                augmentations (no Left-Right flip), and 2+1 prompt sampling.
 ===============================================================================
 """
 
@@ -35,7 +36,8 @@ class ReXDataset(Dataset):
     """
     Native Resolution 3D CT Dataset for ReXGroundingCT fine-tuning.
     Loads images, 4D segmentations, and Qwen text embeddings, applying
-    MONAI patch-based cropping, intensity Z-score normalization, and fast SSD caching.
+    MONAI patch-based cropping, intensity Z-score normalization, fast SSD caching,
+    85% foreground oversampling, laterality-safe augmentations, and 2+1 prompt sampling.
     """
 
     def __init__(
@@ -47,11 +49,13 @@ class ReXDataset(Dataset):
         cache_dir: str, 
         is_train: bool = True, 
         patch_size: int = 192,
-        max_findings_per_scan: int = 1
+        num_positive_prompts: int = 2,
+        num_negative_prompts: int = 1,
+        pos_ratio: float = 0.85
     ):
         """
         Signature:
-            __init__(dataset_json: str, split: str, img_dir: str, seg_dir: str, cache_dir: str, is_train: bool, patch_size: int, max_findings_per_scan: int) -> None
+            __init__(dataset_json: str, split: str, img_dir: str, seg_dir: str, cache_dir: str, is_train: bool, patch_size: int, num_positive_prompts: int, num_negative_prompts: int, pos_ratio: float) -> None
 
         Objective:
             Initialize ReXDataset instance, setup MONAI augmentation pipeline, Z-score intensity normalization, and SSD cache hash.
@@ -64,7 +68,9 @@ class ReXDataset(Dataset):
             cache_dir (str): Directory path containing precomputed Qwen text embeddings.
             is_train (bool): Whether dataset is configured for training (applies random augmentations). Default True.
             patch_size (int): Spatial crop patch size (e.g. 192). Default 192.
-            max_findings_per_scan (int): Maximum number of findings to sample per scan. Default 1.
+            num_positive_prompts (int): Number of positive findings to sample per scan. Default 2.
+            num_negative_prompts (int): Number of negative absent findings to sample per scan. Default 1.
+            pos_ratio (float): Probability of sampling foreground lesion patch (default: 0.85).
 
         Outputs:
             None
@@ -74,7 +80,9 @@ class ReXDataset(Dataset):
         self.seg_dir = seg_dir
         self.cache_dir = cache_dir
         self.is_train = is_train
-        self.max_findings_per_scan = max_findings_per_scan
+        self.num_positive_prompts = num_positive_prompts
+        self.num_negative_prompts = num_negative_prompts
+        self.pos_ratio = pos_ratio
         
         with open(dataset_json, 'r') as f:
             data = json.load(f)
@@ -103,13 +111,13 @@ class ReXDataset(Dataset):
                     keys=['image', 'seg'],
                     label_key='seg',
                     spatial_size=[patch_size, patch_size, patch_size],
-                    pos=1.0,
-                    neg=0.0,
+                    pos=self.pos_ratio,
+                    neg=1.0 - self.pos_ratio,
                     num_samples=1
                 ),
-                mt.RandFlipd(keys=['image', 'seg'], prob=0.5, spatial_axis=0),
-                mt.RandFlipd(keys=['image', 'seg'], prob=0.5, spatial_axis=1),
-                mt.RandFlipd(keys=['image', 'seg'], prob=0.5, spatial_axis=2),
+                mt.RandFlipd(keys=['image', 'seg'], prob=0.5, spatial_axis=0), # Depth Z-axis
+                mt.RandFlipd(keys=['image', 'seg'], prob=0.5, spatial_axis=1), # Antero-Posterior Y-axis
+                # CRITICAL DIRECTIVE: Left-Right flip (spatial_axis=2) is omitted to preserve anatomical laterality
                 mt.EnsureTyped(keys=['image', 'seg'], dtype=torch.float32)
             ])
         else:
@@ -229,16 +237,47 @@ class ReXDataset(Dataset):
         except Exception as e:
             raise RuntimeError(f"Error loading text embeddings from {cache_path}: {e}")
         
-        # Sample findings per volume to manage GPU memory footprint
+        # Sample positive findings per volume
         num_findings = text_embeddings.shape[0]
-        if num_findings > self.max_findings_per_scan:
+        if num_findings > self.num_positive_prompts:
             if self.is_train:
-                selected_indices = np.random.choice(num_findings, self.max_findings_per_scan, replace=False)
+                pos_indices = np.random.choice(num_findings, self.num_positive_prompts, replace=False)
             else:
-                selected_indices = np.arange(self.max_findings_per_scan)
+                pos_indices = np.arange(self.num_positive_prompts)
+            pos_text_embeddings = text_embeddings[pos_indices]
+            pos_seg_cropped = seg_cropped[pos_indices]
+        else:
+            pos_text_embeddings = text_embeddings
+            pos_seg_cropped = seg_cropped
+
+        # Sample negative prompts during training (teaching empty-mask output on absent findings)
+        if self.is_train and self.num_negative_prompts > 0:
+            neg_embeds_list = []
+            for _ in range(self.num_negative_prompts):
+                for _attempt in range(10):
+                    neg_idx = np.random.randint(0, len(self.entries))
+                    if neg_idx != idx:
+                        neg_scan_id = self.entries[neg_idx]['name'].replace('.nii.gz', '')
+                        neg_cache_path = os.path.join(self.cache_dir, f"{neg_scan_id}.pt")
+                        if os.path.exists(neg_cache_path):
+                            try:
+                                neg_text_all = torch.load(neg_cache_path, map_location='cpu')
+                                neg_f_idx = np.random.randint(0, neg_text_all.shape[0])
+                                neg_embeds_list.append(neg_text_all[neg_f_idx:neg_f_idx+1])
+                                break
+                            except Exception:
+                                pass
+                else:
+                    neg_embeds_list.append(torch.zeros((1, pos_text_embeddings.shape[1]), dtype=pos_text_embeddings.dtype))
+
+            neg_text_embeddings = torch.cat(neg_embeds_list, dim=0)
+            neg_seg_cropped = torch.zeros((neg_text_embeddings.shape[0], *pos_seg_cropped.shape[1:]), dtype=pos_seg_cropped.dtype)
             
-            text_embeddings = text_embeddings[selected_indices]
-            seg_cropped = seg_cropped[selected_indices]
+            text_embeddings = torch.cat([pos_text_embeddings, neg_text_embeddings], dim=0)
+            seg_cropped = torch.cat([pos_seg_cropped, neg_seg_cropped], dim=0)
+        else:
+            text_embeddings = pos_text_embeddings
+            seg_cropped = pos_seg_cropped
         
         data_dict = {
             'image': img_normalized,

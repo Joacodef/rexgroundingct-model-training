@@ -1,97 +1,94 @@
-# VoxTell Baseline Architecture & Technical Reference
+# VoxTell Baseline Architecture, Training Protocol & Technical Reference
 
 > [!IMPORTANT]
-> This document details key specifications, codebase architecture, pre-training history, and operational guidelines for the pre-trained **VoxTell** baseline model (`voxtell_v1.1`). It combines findings from the VoxTell paper (*cs.CV, Nov 2025*) with a deep source code audit of the installed package (`.venv-voxtell/lib/python3.13/site-packages/voxtell/`).
+> This document details the complete ground-truth specifications, pre-training corpus, fine-tuning protocols, loss configurations, and operational guidelines for the **VoxTell** foundation model (`voxtell_v1.1`). It consolidates all official disclosures from the VoxTell publication (*"VoxTell: Free-Text Promptable Universal 3D Medical Image Segmentation"*, Rokuss et al., DKFZ / MIC-DKFZ, arXiv:2511.11450, Nov 2025) and deep codebase audits of the implementation.
 
 ---
 
-## 🏁 1. VoxTell Pre-Training Distribution & Instance Bias
+## 🏁 1. Pre-Training Corpus & ReXGroundingCT Fine-Tuning Dataset
 
-### Pre-Training Provenance
-* **Scale:** Pre-trained on a multi-modality 3D medical corpus of **62,000+ 3D scans** (CT, MRI, PET) spanning **1,000+ anatomical and pathological concepts**.
-* **Text-Image Grounding Datasets:** Incorporates CT-RATE and multi-organ 3D segmentation benchmarks for spatially grounded anatomical queries.
-* **Supervision Loss:** Trained with fully-supervised standard Dice + Binary Cross-Entropy (BCE) losses computed over volume masks.
+### A. Universal Pre-Training Corpus
+* **Scale**: Pre-trained across **62,000+ volumetric 3D scans** spanning CT, MRI, and PET modalities across **1,000+ anatomical and pathological concepts**.
+* **Vocabulary Harmonization**: Built a unified clinical vocabulary comprising **1,087 concepts and 9,682 rewritten labels** validated via LLM-assisted conflict detection and human expert verification.
 
-### Instance Suppression Bias
-Because pre-training relied on partially-annotated datasets with standard supervised losses, the model exhibits an **instance suppression bias**: unannotated positive instances in partially-labeled training scans are treated as background (0), suppressing candidate logit activations. This motivates Positive-Unlabeled (PU), SPOCO, or Mean Teacher consistency adaptations for Phase 3 fine-tuning.
+### B. Instance-Focused Composite Dataset (Appendix B.3 & Table 6)
+The authors explicitly identified that semantic pre-training alone cannot solve fine-grained, localized spatial queries. To fine-tune VoxTell for the **ReXGroundingCT** benchmark, they curated an **instance-focused composite dataset** comprising:
+1. **Official ReXGroundingCT Training Split**: **2,992 chest CT scans** from the CT-RATE corpus with free-text report findings grounded to 3D voxel annotations.
+2. **TotalSegmentator-Derived Pseudo-Instance Augmentation**: Converted public semantic lesion datasets (e.g. LIDC, Decathlon, StructSeg, TriALS) into localized instance annotations by extracting anatomical anchors (lung lobes, Couinaud liver segments, left/right kidneys) using TotalSegmentator and synthesizing spatial prompts (e.g., *"spiculated tumor in the left lower lobe"*, *"cluster of HCC lesions in Couinaud segment 5"*).
+3. **TCIA Collections with Structured DICOM Metadata**: Brain and head–neck CT/MR datasets (RADCURE, BrainGammaKnife) converted into location prompts via slice positioning and series metadata.
 
 ---
 
 ## 🔬 2. Architecture & Code Specifications
 
-Source code location: `.venv-voxtell/lib/python3.13/site-packages/voxtell/`
-
-```
-voxtell/
-├── model/
-│   ├── voxtell_model.py     # Main VoxTellModel & VoxTellDecoder classes
-│   └── transformer.py       # DETR-style TransformerDecoder & TransformerDecoderLayer
-├── inference/
-│   ├── predictor.py         # VoxTellPredictor (sliding window, text embedding, binarization)
-│   └── predict_from_raw_data.py # CLI entrypoint and NIfTI I/O writer
-└── utils/
-    └── text_embedding.py    # Instruction wrapping template and last_token_pool
-```
-
-### Key Subsystems & Hyperparameters
-
-1. **Text Embedding & Instruction Pipeline**:
-   * **Text Encoder Backbone**: `Qwen/Qwen3-Embedding-4B` (`.venv-voxtell/lib/python3.13/site-packages/voxtell/inference/predictor.py#L68-L70`) (embedding dimension $D_{\text{text}} = 2560$, max sequence length 8192).
-   * **Instruction Wrapper**: Free-text prompts are formatted using `wrap_with_instruction` (`.venv-voxtell/lib/python3.13/site-packages/voxtell/utils/text_embedding.py#L14-L20`):  
-     `"Instruct: Given an anatomical term query, retrieve the precise anatomical entity and location it represents\nQuery: {text}"`
-   * **Token Pooling**: `last_token_pool` (`.venv-voxtell/lib/python3.13/site-packages/voxtell/utils/text_embedding.py#L3-L11`) extracts the hidden state of the last non-padded token.
-   * **Linear Projection**: `project_text_embed`: `Linear(2560 → 2048) → GELU → Linear(2048 → 2048)`.
-
-2. **3D Vision Encoder**:
-   * **Backbone**: `ResidualEncoder` (from `dynamic_network_architectures`) extracting multi-scale 3D feature skip connections ($S_0 \dots S_5$).
-   * **Input Channels**: 1 (single-channel CT volume).
-
-3. **Bottleneck Projection & 3D Positional Encoding**:
-   * Encoder features at layer 4 (channels: 320, spatial: $12 \times 12 \times 12$) are projected via `project_bottleneck_embed` to `query_dim = 2048`.
-   * **Positional Encoding**: Fused with 3D sinusoidal positional encodings (`PositionalEncoding3D(query_dim)`).
-
-4. **Prompt Transformer Decoder**:
-   * `TransformerDecoder` (`.venv-voxtell/lib/python3.13/site-packages/voxtell/model/transformer.py#L17-L104`): 6 DETR-style transformer layers, 8 attention heads, LayerNorm pre-normalization.
-   * Queries ($Q$) = Text prompt embeddings. Memory ($K, V$) = Bottleneck 3D image features.
-   * Outputs refined text-conditioned mask query embeddings ($N_{\text{prompts}}, B, 2048$).
-
-5. **MaskFormer Multi-Stage Decoder & Einsum Fusion**:
-   * `VoxTellDecoder` (`.venv-voxtell/lib/python3.13/site-packages/voxtell/model/voxtell_model.py#L280-L472`) upsamples features across 5 resolution stages.
-   * Fuses text mask embeddings at each stage via multi-head tensor contraction (`torch.einsum('b c h w d, b n c -> b n h w d')`).
-   * Final segmentation logits are produced by voxel-wise dot-product einsum between decoder spatial features and prompt query embeddings.
+* **Vision Backbone**: 3D `ResidualEncoder` (ResEncL from `dynamic_network_architectures` / nnU-Net v2) with 6 hierarchical resolution stages producing feature channels `[32, 64, 128, 256, 320, 320]`.
+* **Bottleneck & Positional Encoding**: Bottleneck features at layer 4 ($12 \times 12 \times 12$) projected to `query_dim = 2048` and fused with 3D sinusoidal positional embeddings (`PositionalEncoding3D`).
+* **Prompt Transformer Decoder**: 6 DETR-style transformer decoder layers (8 attention heads, LayerNorm pre-normalization, hidden dim 2048) performing cross-attention between text query embeddings ($Q$) and 3D vision bottleneck features ($K, V$).
+* **MaskFormer Multi-Stage Decoder & Einsum Fusion**: `VoxTellDecoder` upsamples spatial features across 5 resolution stages, fusing text query embeddings at every stage via tensor contraction (`torch.einsum('b c h w d, b n c -> b n h w d')`).
+* **Text Encoder**:
+  - *Paper Specification*: Frozen `Qwen/Qwen3-Embedding-4B` ($D_{\text{text}} = 2560$).
+  - *Open-Source Release (`v1.1`)*: Frozen `Qwen2-0.5B` instruction-tuned model.
+  - *Instruction Wrapping Template*:  
+    `"Instruct: Given an anatomical term query, retrieve the precise anatomical entity and location it represents\nQuery: {text}"`
+  - *Token Pooling*: Hidden state of the last non-padded token extracted via `last_token_pool`.
 
 ---
 
-## 🔍 3. Inference & Spatial Pipeline Protocols
+## ⚙️ 3. Official Training Protocols & Hyperparameters (Appendix A.1 & A.3)
 
-1. **Spatial Reader & Alignment**:
-   * Uses `nibabel` spatial canonicalization to process CT volumes in standard RAS coordinate space.
-
-2. **Intensity Preprocessing**:
-   * Background cropped to non-zero regions via `crop_to_nonzero`.
-   * Intensity normalized using masked `ZScoreNormalization`.
-
-3. **Sliding-Window Inference**:
-   * **Patch Size**: `(192, 192, 192)`.
-   * **Overlap**: Default `tile_step_size = 0.5` (50% tile overlap).
-   * **Weighting**: 3D Gaussian kernel (`compute_gaussian`, $\sigma\_scale = 1/8$, `value_scaling_factor = 10`).
-   * **Async Prefetching**: Multi-threaded producer-consumer queue (`Queue(maxsize=2)`) overlaps CPU patch loading with GPU forward passes.
-
-4. **Binarization & Thresholding**:
-   * Predicts continuous logits, converted to probabilities via `torch.sigmoid()`.
-   * Standard zero-shot binarization threshold: `p > 0.5`.
+* **Framework**: Built on the **nnU-Net v2** framework (`nnUNetTrainer`-derived 3D pipeline).
+* **Patch Size & Input Format**: **$192 \times 192 \times 192$ voxel patches**, depth-first C-contiguous ordering `(Z, Y, X)`.
+* **Optimizer & Schedule**: **Stochastic Gradient Descent (SGD)** with initial learning rate $\text{lr} = 1 \times 10^{-4}$ decayed via polynomial schedule across 2,000 epochs (250 iterations/epoch).
+* **Loss Function**: Combined **Binary Cross-Entropy (BCE) + Soft Dice Loss**.
+* **Deep Supervision**: Applied across 5 decoder scales with nnU-Net default scale weights:  
+  $$\lambda_s = [1, 1/2, 1/4, 1/8, 1/16]$$
+* **Prompt Sampling per Volume Step**:
+  - Each volume is queried with **3 prompts per step**:
+    - **2 Positive Prompts**: Structures actually present in the sampled volume patch.
+    - **1 Negative Prompt**: A structure absent from the volume (critical for training the model to output empty masks when targets are not present).
+* **Foreground Oversampling**: **85% probability** of sampling patches centered on foreground annotated lesions (15% random background).
+* **Dynamic Text Augmentation**: 75% probability of sampling an LLM-generated synonym/paraphrase and 25% probability of using the default label string.
+* **Data Augmentations**: Standard nnU-Net 3D spatial and intensity augmentations.
+  > [!CAUTION]
+  > **Crucial Data Augmentation Constraint**: **Left-Right Mirroring is strictly DISABLED** during training to prevent destroying anatomical laterality (e.g. differentiating left vs. right lung pathology).
 
 ---
 
-## 🛠️ 4. Fine-Tuning & Training Infrastructure
+## 📊 4. Official ReXGroundingCT Benchmark Scores (Section 6, Figure 4)
 
-1. **Text Embedding Pre-Caching**:
-   * Qwen text embeddings are pre-computed offline via `precompute_text_cache` and saved to `data/text_cache/*.pt` (shape: `(F, 2560)`).
-   * Eliminates the heavy 4B parameter text model from GPU memory during network fine-tuning.
+* **Fine-Tuned VoxTell on ReXGroundingCT Validation Split**:
+  - **Average Dice**: **`28.2`**
+  - **HIT5%** ($\text{Dice} \ge 0.05$): **`67.8%`**
+  - *Comparison*: State-of-the-art baseline SAT achieved `13.1` Dice and `49.8%` HIT5% on the identical data mix.
+* *Metric Clarification*: The VoxTell publication reported **HIT5%** ($\text{Dice} \ge 0.05$), whereas the official MICCAI ReXGroundingCT Challenge evaluates **HIT10%** ($\text{Dice} \ge 0.10$).
 
-2. **Fast SSD Volume Caching**:
-   * Reorientated, cropped, and Z-score normalized CT volumes are cached as PyTorch tensors in fast SSD temporary storage (`TMP_PREP_DIR`) to bypass slow CPU Gzip decompression bounds.
+---
 
-3. **Patch Augmentation & Sampling**:
-   * MONAI `RandCropByPosNegLabeld` with `pos = 1.0` ensures positive-centered $192 \times 192 \times 192$ patch extraction.
-   * 3D spatial random flips (`RandFlipd`) applied along all 3 axes during training.
+## ⚠️ 5. Empirical Discovery: The Negative Instance Suppression Problem
+
+### A. The Sparse-to-Exhaustive Annotation Disparity
+1. **Sparsely Labeled Training Ground Truth**: The 2,992-scan ReXGroundingCT training set is *partially annotated* (only a subset of findings are annotated per scan, while remaining true lesions are unannotated).
+2. **Naïve Supervised Penalty**: When fine-tuning with naïve supervised BCE/Dice over full volumes (`exp_001`), the loss actively penalizes the model for correctly predicting true lesions in unannotated regions as "false positives".
+3. **Catastrophic Empirical Collapse (Exp 001 Audit)**:
+   - Naïve 6-epoch supervised fine-tuning collapsed the validation metric from **0.0988** (Zero-Shot) down to **0.0475 Average Dice** (-51.9%).
+   - On **Category 2d (Pulmonary nodules/masses, 132 findings)**, Hit Rate collapsed from **24.24% down to 3.79%**!
+
+### B. Methodological Solutions for Phase 3
+To resolve this suppression without relying on closed proprietary pseudo-instance datasets:
+1. **Exp 002 (Positive-Unlabeled Mean Teacher / SPOCO)**:
+   - Restrict supervised Dice/BCE loss strictly to dilated positive ROIs surrounding annotated lesions.
+   - Apply Mean Teacher EMA consistency loss on unannotated background voxels to preserve zero-shot recall.
+2. **Exp 003 (Multi-Planar Regularization / MPR Loss)**:
+   - Compute 2D max-projection consistency along Axial, Coronal, and Sagittal planes with the Teacher to penalize dispersed noise while allowing valid 3D unannotated structures to emerge.
+
+---
+
+## 🛠️ 6. Inference & Spatial Pipeline Protocols
+
+1. **Centralized Spatial Engine (`scripts/common/orientation.py`)**:
+   - All input CT volumes and ground truth masks are canonicalized to NIfTI `RAS` physical coordinates at load time via `load_nifti_ras()`.
+   - Predictions are converted back to native scan affine orientation (`LPS`) on disk via `save_nifti()`, matching ground-truth mask format 100%.
+2. **Centralized Universal Inference Engine (`scripts/common/voxtell_inference.py`)**:
+   - Supports single-GPU and server-agnostic multi-GPU DDP sharding (`torchrun --nproc_per_node=N`).
+   - Sliding-window Gaussian weighting ($\sigma\_scale = 1/8$), default `tile_step_size = 0.5` (50% overlap).
+   - Binarization cutoff: continuous sigmoid probabilities thresholded at $p > 0.5$.

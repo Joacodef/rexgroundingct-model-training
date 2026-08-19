@@ -133,6 +133,7 @@ def test_load_nifti_ras_non_finite_affine(tmp_path: Path):
 
     real_load = nib.load
     def mock_load(path):
+        """Mock loader injecting NaN into affine matrix."""
         img = real_load(path)
         img.affine[0, 0] = np.nan
         return img
@@ -292,6 +293,7 @@ class TestOrientation(unittest.TestCase):
     """unittest.TestCase wrapper for centralized spatial orientation engine test suite."""
 
     def test_all_orientation_tests(self):
+        """Execute all orientation test cases in sequence."""
         test_functions = [
             test_load_nifti_ras_canonical_ras,
             test_load_nifti_ras_non_ras_affines,

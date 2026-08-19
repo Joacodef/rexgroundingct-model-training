@@ -32,6 +32,7 @@ class TestPhase2ARunner(unittest.TestCase):
     """
 
     def setUp(self):
+        """Set up synthetic test fixtures and temporary directories."""
         self.test_dir = tempfile.TemporaryDirectory()
         self.tmp_path = Path(self.test_dir.name)
 
@@ -83,6 +84,7 @@ class TestPhase2ARunner(unittest.TestCase):
         np.savez_compressed(self.pdf_cache_path, **synthetic_pdfs)
 
     def tearDown(self):
+        """Clean up temporary test fixtures."""
         self.test_dir.cleanup()
 
     def test_run_prior_inference_and_eval_execution(self):

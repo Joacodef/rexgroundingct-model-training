@@ -130,3 +130,84 @@ def get_unwrapped_state_dict(model: nn.Module) -> dict:
     if hasattr(model, "module"):
         return model.module.state_dict()
     return model.state_dict()
+
+
+def ddp_step(
+    total_loss: torch.Tensor,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler,
+    is_distributed: bool,
+    max_norm: float = 1.0,
+    logger: logging.Logger | None = None,
+    scan_id: str = "",
+    rank: int = 0
+) -> bool:
+    """
+    Signature:
+        ddp_step(total_loss: torch.Tensor, model: nn.Module, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, is_distributed: bool, max_norm: float = 1.0, logger: logging.Logger | None = None, scan_id: str = "", rank: int = 0) -> bool
+
+    Objective:
+        Execute a robust, synchronized gradient backward, unscale, gradient clipping,
+        and optimizer step across distributed ranks. Guarantees that all DDP ranks execute
+        identical collective operations even if individual ranks encounter non-finite loss or gradients.
+
+    Inputs:
+        total_loss (torch.Tensor): Forward loss tensor.
+        model (nn.Module): DDP or single-GPU model.
+        optimizer (torch.optim.Optimizer): Optimizer instance.
+        scaler (torch.amp.GradScaler): AMP gradient scaler.
+        is_distributed (bool): Whether running under PyTorch DDP.
+        max_norm (float): Gradient clipping max norm. Default 1.0.
+        logger (logging.Logger | None): Optional logger for diagnostic warnings.
+        scan_id (str): Current scan identifier for logging.
+        rank (int): Process global rank index.
+
+    Outputs:
+        bool: True if the optimizer step was successfully executed with finite loss and finite gradients, False otherwise.
+    """
+    loss_is_finite = torch.isfinite(total_loss)
+    
+    if is_distributed and dist.is_available() and dist.is_initialized():
+        finite_flag = torch.tensor(1.0 if loss_is_finite else 0.0, device=total_loss.device if total_loss.is_cuda else torch.device("cuda"))
+        dist.all_reduce(finite_flag, op=dist.ReduceOp.MIN)
+        all_finite = (finite_flag.item() > 0.5)
+    else:
+        all_finite = loss_is_finite.item() if isinstance(loss_is_finite, torch.Tensor) else bool(loss_is_finite)
+
+    if not all_finite:
+        if logger is not None and not loss_is_finite:
+            logger.warning(f"Scan {scan_id} on Rank {rank} produced non-finite loss ({total_loss.item()}). Synchronously skipping step across all ranks.")
+        # Perform safe zero-gradient backward to maintain DDP hook synchronization across all ranks
+        safe_loss = torch.nan_to_num(total_loss, nan=0.0, posinf=0.0, neginf=0.0) * 0.0
+        scaler.scale(safe_loss).backward()
+        scaler.unscale_(optimizer)
+        scaler.update()
+        optimizer.zero_grad()
+        return False
+
+    # Standard backward pass
+    scaler.scale(total_loss).backward()
+    scaler.unscale_(optimizer)
+
+    # Check gradient finiteness before clipping to prevent NaN corruption
+    local_grads_finite = all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+    if is_distributed and dist.is_available() and dist.is_initialized():
+        grad_flag = torch.tensor(1.0 if local_grads_finite else 0.0, device=total_loss.device if total_loss.is_cuda else torch.device("cuda"))
+        dist.all_reduce(grad_flag, op=dist.ReduceOp.MIN)
+        all_grads_finite = (grad_flag.item() > 0.5)
+    else:
+        all_grads_finite = local_grads_finite
+
+    if all_grads_finite:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_norm)
+        scaler.step(optimizer)
+        scaler.update()
+        return True
+    else:
+        if logger is not None and not local_grads_finite:
+            logger.warning(f"Scan {scan_id} on Rank {rank} produced non-finite gradients. Synchronously skipping optimizer step across all ranks.")
+        scaler.update()
+        optimizer.zero_grad()
+        return False
+

@@ -21,7 +21,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from scripts.config import DATASET_JSON, CATEGORY_MAP
+from scripts.config import DATASET_JSON, DATASET_MINI_JSON, CATEGORY_MAP
 
 
 def sample_representative_scans(entries: list[dict], target_count: int = 20) -> list[dict]:
@@ -82,7 +82,7 @@ def main() -> None:
         main() -> None
 
     Objective:
-        Parse arguments and generate data/dataset_mini.json.
+        Parse arguments and generate dataset_mini.json in the global data directory.
 
     Inputs:
         None
@@ -94,7 +94,7 @@ def main() -> None:
     parser.add_argument("--dataset_json", type=str, default=str(DATASET_JSON), help="Path to full dataset.json")
     parser.add_argument("--num_train", type=int, default=20, help="Number of training scans (default: 20)")
     parser.add_argument("--num_val", type=int, default=5, help="Number of validation scans (default: 5)")
-    parser.add_argument("--output", type=str, default=str(ROOT_DIR / "data" / "dataset_mini.json"), help="Output path")
+    parser.add_argument("--output", type=str, default=str(DATASET_MINI_JSON), help="Output path")
     args = parser.parse_args()
 
     input_path = Path(args.dataset_json)

@@ -11,7 +11,8 @@ from scripts.phase_3_voxtell_training.common.distributed import (
     init_distributed,
     cleanup_distributed,
     setup_distributed_logger,
-    get_unwrapped_state_dict
+    get_unwrapped_state_dict,
+    ddp_step
 )
 from scripts.phase_3_voxtell_training.common.dataset import ReXDataset
 from scripts.phase_3_voxtell_training.common.model_loader import load_voxtell_model
@@ -21,6 +22,8 @@ __all__ = [
     "cleanup_distributed",
     "setup_distributed_logger",
     "get_unwrapped_state_dict",
+    "ddp_step",
     "ReXDataset",
     "load_voxtell_model"
 ]
+

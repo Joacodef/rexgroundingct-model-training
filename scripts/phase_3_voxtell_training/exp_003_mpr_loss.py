@@ -305,7 +305,7 @@ def train_mpr_epoch(
         
         optimizer.zero_grad()
         
-        with torch.amp.autocast('cuda'):
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             # Student forward pass
             student_logits = student_model(images, text_embeds)
             student_probs = torch.sigmoid(student_logits)
@@ -315,10 +315,13 @@ def train_mpr_epoch(
                 teacher_logits = teacher_model(images, text_embeds)
                 teacher_probs = torch.sigmoid(teacher_logits)
                 
-            # Compute dilated ROI mask
+            # Compute dilated ROI mask for positive findings; for negative findings (confirmed absent),
+            # enforce full-volume supervision to penalize false positive hallucinations and disable consistency loss.
+            is_positive = (targets.sum(dim=(2, 3, 4), keepdim=True) > 0)
             roi_mask = compute_roi_mask(targets, kernel_size=11, padding=5)
+            roi_mask = torch.where(is_positive, roi_mask, torch.ones_like(roi_mask, dtype=torch.bool))
             
-            # Supervised loss strictly within ROI
+            # Supervised loss strictly within ROI (or full volume for negative prompts)
             loss_sup = compute_roi_masked_loss(student_logits.float(), targets.float(), roi_mask, pos_weight=pos_weight)
             
             # 3D Multi-Planar Projection (MPR) consistency loss across unannotated background voxels
@@ -454,7 +457,7 @@ def main() -> None:
         # Optimizer, Scheduler, Scaler
         optimizer = torch.optim.AdamW(student_model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
-        scaler = torch.amp.GradScaler('cuda')
+        scaler = torch.amp.GradScaler('cuda', enabled=False)
         
         start_epoch = 1
         best_loss = float("inf")

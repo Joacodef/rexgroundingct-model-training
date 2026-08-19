@@ -112,21 +112,22 @@ def load_nifti_ras(nifti_path: Path) -> tuple[np.ndarray, nib.Nifti1Image, tuple
         return data_ras, ras_nii, raw_axcodes
 
 
-def save_nifti(pred_array: np.ndarray, out_path: Path, parent_ct_path: Path = None, affine: np.ndarray = None) -> None:
+def save_nifti(pred_array: np.ndarray, out_path: Path, parent_ct_path: Path = None, affine: np.ndarray = None, dtype: np.dtype = None) -> None:
     """
     Signature:
-        save_nifti(pred_array: np.ndarray, out_path: Path, parent_ct_path: Path = None, affine: np.ndarray = None) -> None
+        save_nifti(pred_array: np.ndarray, out_path: Path, parent_ct_path: Path = None, affine: np.ndarray = None, dtype: np.dtype = None) -> None
 
     Objective:
-        Save a 3D or 4D binary prediction array to disk as a NIfTI file anchored to parent CT scan header.
+        Save a 3D or 4D binary prediction or continuous probability array to disk as a NIfTI file anchored to parent CT scan header.
         Converts canonical RAS prediction arrays back into the parent CT scan's raw voxel index space (LPS),
         saving prediction files on disk in 100% identical format and header structure as official Ground Truth masks.
 
     Inputs:
-        pred_array (np.ndarray): Binary prediction mask array (3D or 4D in canonical RAS space).
+        pred_array (np.ndarray): Prediction mask or probability array (3D or 4D in canonical RAS space).
         out_path (Path): File destination path for NIfTI file.
         parent_ct_path (Path, optional): Path to matching raw CT scan file. Defaults to RAW_IMAGES_DIR / out_path.name.
         affine (np.ndarray, optional): 4x4 affine matrix fallback for synthetic tests.
+        dtype (np.dtype, optional): Output numpy data type. Defaults to uint8 for binary masks and float32 for continuous probabilities.
 
     Outputs:
         None
@@ -134,7 +135,12 @@ def save_nifti(pred_array: np.ndarray, out_path: Path, parent_ct_path: Path = No
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    pred_array = np.asanyarray(pred_array, dtype=np.uint8)
+    if dtype is not None:
+        pred_array = np.asanyarray(pred_array, dtype=dtype)
+    elif np.issubdtype(np.asanyarray(pred_array).dtype, np.floating):
+        pred_array = np.asanyarray(pred_array, dtype=np.float32)
+    else:
+        pred_array = np.asanyarray(pred_array, dtype=np.uint8)
 
     # [AI WARNING: DO NOT MODIFY OR REFACTOR THIS LOGIC]
     # We intentionally transpose to (F, X, Y, Z) here. 

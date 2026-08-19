@@ -158,7 +158,7 @@ def train_epoch(
         
         optimizer.zero_grad()
         
-        with torch.amp.autocast('cuda'):
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             # VoxTell forward pass with deep supervision
             outputs = model(images, text_embeds)
             
@@ -342,7 +342,7 @@ def main() -> None:
                 eta_min=1e-6
             )
             
-        scaler = torch.amp.GradScaler('cuda')
+        scaler = torch.amp.GradScaler('cuda', enabled=False)
         
         bce_criterion = nn.BCEWithLogitsLoss()
         dice_criterion = DiceLoss(sigmoid=True)

@@ -254,20 +254,20 @@ class ReXDataset(Dataset):
         if self.is_train and self.num_negative_prompts > 0:
             neg_embeds_list = []
             for _ in range(self.num_negative_prompts):
-                for _attempt in range(10):
-                    neg_idx = np.random.randint(0, len(self.entries))
-                    if neg_idx != idx:
-                        neg_scan_id = self.entries[neg_idx]['name'].replace('.nii.gz', '')
-                        neg_cache_path = os.path.join(self.cache_dir, f"{neg_scan_id}.pt")
-                        if os.path.exists(neg_cache_path):
-                            try:
-                                neg_text_all = torch.load(neg_cache_path, map_location='cpu')
-                                neg_f_idx = np.random.randint(0, neg_text_all.shape[0])
-                                neg_embeds_list.append(neg_text_all[neg_f_idx:neg_f_idx+1])
-                                break
-                            except Exception:
-                                pass
+                if len(self.entries) > 1:
+                    neg_idx = (idx + np.random.randint(1, len(self.entries))) % len(self.entries)
                 else:
+                    neg_idx = idx
+                
+                neg_scan_id = self.entries[neg_idx]['name'].replace('.nii.gz', '')
+                neg_cache_path = os.path.join(self.cache_dir, f"{neg_scan_id}.pt")
+                
+                try:
+                    neg_text_all = torch.load(neg_cache_path, map_location='cpu')
+                    neg_f_idx = np.random.randint(0, neg_text_all.shape[0])
+                    neg_embeds_list.append(neg_text_all[neg_f_idx:neg_f_idx+1])
+                except Exception:
+                    # Fallback to zero embedding on missing or corrupted cache
                     neg_embeds_list.append(torch.zeros((1, pos_text_embeddings.shape[1]), dtype=pos_text_embeddings.dtype))
 
             neg_text_embeddings = torch.cat(neg_embeds_list, dim=0)

@@ -74,7 +74,7 @@ def run_diagnostics(dataset_json: str, epochs: int = 2, device: str = "cuda:0") 
     
     model = load_voxtell_model(str(MODEL_DIR), device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-4)
-    scaler = torch.amp.GradScaler('cuda')
+    scaler = torch.amp.GradScaler('cuda', enabled=False)
     
     bce_criterion = nn.BCEWithLogitsLoss()
     dice_criterion = DiceLoss(sigmoid=True)
@@ -97,7 +97,7 @@ def run_diagnostics(dataset_json: str, epochs: int = 2, device: str = "cuda:0") 
             fg_voxels = int(targets.sum().item())
             optimizer.zero_grad()
             
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 outputs = model(images, text_embeds)
                 if isinstance(outputs, (list, tuple)):
                     raw_scale_weights = [1.0, 0.5, 0.25, 0.125, 0.0625]

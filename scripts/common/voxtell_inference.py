@@ -68,6 +68,8 @@ def main():
                         help="Step size for sliding window inference (default: 0.5 = 50%% overlap, increase to speed up)")
     parser.add_argument("--start_idx", type=int, default=0, help="Start index for processing dataset entries (single-GPU mode)")
     parser.add_argument("--end_idx", type=int, default=None, help="End index for processing dataset entries (single-GPU mode, exclusive)")
+    parser.add_argument("--save_raw_probs", action="store_true",
+                        help="Save continuous float32 probability maps instead of binarized uint8 masks for offline threshold tuning")
     args = parser.parse_args()
 
     # Inject paths from .env file or fallback config
@@ -250,14 +252,18 @@ def main():
         probs_nnunet_full = np.zeros([probs_nnunet_crop.shape[0], *orig_shape], dtype=np.float32)
         probs_nnunet_full = insert_crop_into_image(probs_nnunet_full, probs_nnunet_crop, bbox)
 
-        # Step 5: Untranspose predicted binary mask from (F, Z, Y, X) back to canonical NIfTI RAS space (F, X, Y, Z)
-        voxtell_seg = ((probs_nnunet_full.transpose((0, 3, 2, 1))) > 0.5).astype(np.uint8)  # shape: (F, X, Y, Z)
+        # Step 5: Untranspose predicted probabilities from (F, Z, Y, X) back to canonical NIfTI RAS space (F, X, Y, Z)
+        probs_ras = probs_nnunet_full.transpose((0, 3, 2, 1))  # shape: (F, X, Y, Z)
 
-        # Step 6: Save prediction anchored to parent CT scan header via Centralized Spatial Engine
-        save_nifti(voxtell_seg, out_path, nifti_path)
+        # Step 6: Save continuous probabilities or binarized mask anchored to parent CT scan header
+        if args.save_raw_probs:
+            save_nifti(probs_ras, out_path, nifti_path, dtype=np.float32)
+        else:
+            voxtell_seg = (probs_ras > 0.5).astype(np.uint8)
+            save_nifti(voxtell_seg, out_path, nifti_path, dtype=np.uint8)
         
         # Explicit memory cleanup
-        del img_ras, ras_nii, voxtell_seg
+        del img_ras, ras_nii, probs_nnunet_crop, probs_nnunet_full, probs_ras
         gc.collect()
         try:
             ctypes.CDLL("libc.so.6").malloc_trim(0)

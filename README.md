@@ -110,12 +110,19 @@ Standalone official metric evaluation for predicted 4D segmentation masks agains
 python scripts/common/evaluate.py --gt_dir ../data/raw/segmentations --img_dir ../data/raw/images --pred_dir ../data/predictions/phase_2a_rule_based --split val
 ```
 
-### 4. VoxTell Naïve Fine-Tuning (Phase 3)
-Run persistent VoxTell naïve supervised baseline fine-tuning:
+### 4. VoxTell Fine-Tuning & Hypotheses (Phase 3)
+Run multi-GPU fine-tuning using the official publication training recipe:
 ```bash
-CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 nohup python -u scripts/phase_3_training/exp_001_naive_finetuning.py --epochs 50 > logs/phase_3_training/exp_001_naive_finetuning/run.log 2>&1 &
+nohup torchrun --nproc_per_node=3 scripts/phase_3_voxtell_training/exp_001_naive_finetuning.py \
+    --dataset_json ../data/dataset.json \
+    --batch_size 1 \
+    --epochs 50 \
+    --optimizer sgd \
+    --lr 1e-4 \
+    --output_dir logs/phase_3_voxtell_training/exp_001_naive_finetuning \
+    > logs/phase_3_voxtell_training/exp_001_naive_finetuning/run.log 2>&1 &
 ```
-*(Note: Proof-of-concept Mean Teacher consistency trainer preserved at `scripts/phase_3_training/legacy_train_mean_teacher.py`)*
+*(Note: Proof-of-concept Mean Teacher consistency trainer preserved at `scratch/phase_3_fine_tuning/proof_of_concept/legacy_train_mean_teacher.py`)*
 
 ---
 

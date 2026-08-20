@@ -50,6 +50,9 @@ CHECKPOINTS_DIR = Path(os.getenv("CHECKPOINTS_DIR") or (MODELS_DIR / "checkpoint
 # 6. Temporary / Fast SSD Storage (Fallback to system /tmp)
 TMP_PREP_DIR = Path(os.getenv("TMP_PREP_DIR") or "/tmp/rexgroundingct_preprocessed")
 
+# 7. Hugging Face Cache Path
+HF_HOME = Path(os.getenv("HF_HOME") or (DATA_DIR / ".cache" / "huggingface"))
+
 # 7. Hardware & Hardware Isolation Settings
 DEFAULT_DEVICE = os.getenv("DEFAULT_DEVICE", "cuda:0")
 CUDA_VISIBLE_DEVICES = os.getenv("CUDA_VISIBLE_DEVICES", "0")

@@ -54,7 +54,16 @@ You MUST always run persistent tasks in one of the following ways:
 * **MONAI Framework Preference Contract**: Wherever reasonable and applicable (such as GPU-accelerated spatial resampling, intensity normalization, transform pipelines, and deep learning preprocessing), MONAI (`monai.transforms`) should be preferred for 3D medical image and mask operations, provided it respects the centralized spatial engine contracts in `scripts/common/orientation.py`.
 
 ### 6. Environment & Virtualenv Contract (No Conda Environments)
-* **Strictly Prohibited: Conda Environments**: NEVER create or invoke Conda environments (`conda create`, `conda activate`, `/miniconda3/envs/...`). All execution, script runs, package management, and test invocations MUST strictly use the project's local virtual environment (`.venv/bin/python` or `uv`). The primary environment is `.venv` located at the repository root, pre-configured with PyTorch 2.13.0+cu130 and full hardware acceleration for all available compute devices (including RTX PRO 6000 Blackwell `sm_120`).
+* **Strictly Prohibited: Conda Environments**: NEVER create or invoke Conda environments (`conda create`, `conda activate`, `/miniconda3/envs/...`). All execution, script runs, package management, and test invocations MUST strictly use the project's local virtual environment (`.venv/bin/python` or `uv`). The primary environment is `.venv` located at the repository root, pre-configured with PyTorch 2.13.0+cu130 and full hardware acceleration for all available compute devices (including NVIDIA H100 `sm_90` and RTX PRO 6000 `sm_120`).
+
+### 7. Multi-Host Cluster Governance & Server Role Specialization
+* **Shared Repository Multi-Server Topology**: Multiple server instances (e.g. `peteroa` and other development nodes) operate on this shared repository concurrently.
+* **Server Role Specialization**:
+  * **Production Compute Node (`peteroa`)**: Dedicated to **heavy batch training (Phase 3 fine-tuning)** and **large-scale architecture scaling (Phase 4)** on its 7x NVIDIA H100 80GB GPUs and SLURM scheduler. **`peteroa` is strictly NOT intended for experimental prototyping or breaking architectural refactors** that could disrupt production batch pipelines.
+  * **Development & Prototyping Nodes**: Dedicated to initial feature design, interactive debugging, and unit testing before scaling onto `peteroa`.
+* **Zero-Disruption Git & Config Isolation**:
+  * Host-specific paths, mount overrides, and authentication tokens MUST strictly reside in untracked `.env` files and NEVER be hardcoded in shared scripts.
+  * Code changes on production compute nodes must remain minimal, stable, backward-compatible, and focused on execution without unexpected regressions across sibling instances.
 
 ---
 

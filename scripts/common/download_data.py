@@ -231,6 +231,20 @@ def download_ct_rate_scans(
     print(f"=== Initiating Selective CT-RATE Download ({len(scan_names)} scans) ===")
 
     def _download_single_scan(filename: str) -> bool:
+        """
+        Signature:
+            _download_single_scan(filename: str) -> bool
+
+        Objective:
+            Download a single CT-RATE NIfTI volume from Hugging Face Hub, copy to target directory,
+            and clean up temporary blobs to conserve disk storage.
+
+        Inputs:
+            filename (str): Name of the NIfTI scan file (e.g., 'train_1_a.nii.gz').
+
+        Outputs:
+            bool: True if download or cache resolution succeeded, False otherwise.
+        """
         dest_file = target_dir / filename
         if dest_file.exists() and dest_file.stat().st_size > 0:
             return True

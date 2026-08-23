@@ -609,6 +609,14 @@ def update_ema_variables(model: nn.Module, ema_model: nn.Module, alpha: float) -
 
     Objective:
         Update Teacher parameters via Exponential Moving Average (EMA).
+
+    Inputs:
+        model (nn.Module): Student active model.
+        ema_model (nn.Module): Teacher EMA model.
+        alpha (float): Momentum smoothing factor (e.g. 0.999).
+
+    Outputs:
+        None
     """
     for ema_param, param in zip(ema_model.parameters(), model.parameters()):
         ema_param.data.mul_(alpha).add_(param.data, alpha=1.0 - alpha)

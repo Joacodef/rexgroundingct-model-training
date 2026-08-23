@@ -102,10 +102,16 @@ def load_canonical_ras(nifti_path: Path, override_affine: np.ndarray = None) -> 
 
 def load_dataset_metadata() -> dict:
     """
-    load_dataset_metadata() -> dict
-    Reads dataset.json file and constructs a lookup map from scan_id to finding metadata.
+    Signature:
+        load_dataset_metadata() -> dict
 
-    Returns:
+    Objective:
+        Reads dataset.json file and constructs a lookup map from scan_id to finding metadata.
+
+    Inputs:
+        None
+
+    Outputs:
         dict: Mapping from scan_id (e.g. 'train_19891_a_2') to item dict containing findings & categories.
     """
     meta_map = {}

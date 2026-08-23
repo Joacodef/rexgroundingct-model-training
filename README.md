@@ -36,16 +36,18 @@ rexgroundingct-model-training/
 ## 🚀 Setup & Execution
 
 ### 1. Environment Setup
-Activate the primary host Conda virtual environment (`voxtell_env`):
+Activate the project's standard Python virtual environment (`.venv`):
 ```bash
-conda activate voxtell_env
+source .venv/bin/activate
 ```
 
-If setting up a local virtual environment:
+If initializing a fresh virtual environment:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements/voxtell.txt
+pip install --upgrade pip setuptools wheel
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+pip install monai nibabel SimpleITK scikit-image scipy pandas numpy tqdm wandb python-dotenv
 ```
 
 ### 2. Phase 2 Baselines & Diagnostics
@@ -111,18 +113,19 @@ python scripts/common/evaluate.py --gt_dir ../data/raw/segmentations --img_dir .
 ```
 
 ### 4. VoxTell Fine-Tuning & Hypotheses (Phase 3)
-Run multi-GPU fine-tuning using the official publication training recipe:
+Run fine-tuning inside a persistent detached `tmux` session:
 ```bash
-nohup torchrun --nproc_per_node=3 scripts/phase_3_voxtell_training/exp_001_naive_finetuning.py \
-    --dataset_json ../data/dataset.json \
-    --batch_size 1 \
-    --epochs 50 \
-    --optimizer sgd \
-    --lr 1e-4 \
-    --output_dir logs/phase_3_voxtell_training/exp_001_naive_finetuning \
-    > logs/phase_3_voxtell_training/exp_001_naive_finetuning/run.log 2>&1 &
+tmux new-session -d -s rex_phase3 "CUDA_VISIBLE_DEVICES=0 .venv/bin/python -u scripts/phase_3_voxtell_training/exp_002_pu_mean_teacher.py --epochs 50 --batch_size 1 --lr 1e-4 --device cuda:0 --wandb 2>&1 | tee logs/phase_3_voxtell_training/exp_002_pu_mean_teacher/run.log"
 ```
-*(Note: Proof-of-concept Mean Teacher consistency trainer preserved at `scratch/phase_3_fine_tuning/proof_of_concept/legacy_train_mean_teacher.py`)*
+
+To monitor progress:
+```bash
+# Attach to live tmux session:
+tmux attach -t rex_phase3
+
+# Or inspect the log file directly:
+tail -f logs/phase_3_voxtell_training/exp_002_pu_mean_teacher/run.log
+```
 
 ---
 

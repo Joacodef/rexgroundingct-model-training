@@ -30,11 +30,11 @@ To prevent hallucinated or outdated AI summaries from superseding ground-truth s
 
 ## 🚫 Execution & Modeling Contracts
 
-### 1. Persistent Process Execution (No SIGHUP Deaths)
-**NEVER run training loops, batch inferences, or long evaluations using standard background jobs (`python script.py &`).** Closing the IDE sends a `SIGHUP` that terminates the job.
-You MUST always run persistent tasks in one of the following ways:
-* **Nohup Redirection (Recommended)**: `nohup command > log_file.log 2>&1 &`
-* **Detached Tmux Sessions**: Run computations inside a detached `tmux` session.
+### 1. Persistent Process Execution (Mandatory Detached TMUX)
+**NEVER run training loops, batch inferences, or long evaluations using standard subshell jobs or naked nohup commands.** IDE reconnects and container reboots will kill processes bound to pseudo-terminals.
+You MUST always run persistent tasks inside a dedicated, named **detached `tmux` session**:
+* **Detached Tmux Execution (Mandatory Standard)**: `tmux new-session -d -s <session_name> "cd <repo_root> && <command> 2>&1 | tee <log_file>"`
+* **Inspection**: `tmux attach -t <session_name>` or `tmux ls`
 
 ### 2. Hardware Isolation Contract
 * All fine-tuning and inference operations must respect host GPU isolation managed via environment variables (`CUDA_VISIBLE_DEVICES=1`), as detailed in local `server_documentation.txt` and `STATUS.md`.

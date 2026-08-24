@@ -32,11 +32,37 @@ from scripts.common.orientation import load_nifti_ras
 logger = logging.getLogger("phase_3_dataset")
 
 
+def resolve_num_workers(requested_workers: int | None = None) -> int:
+    """
+    Signature:
+        resolve_num_workers(requested_workers: int | None) -> int
+
+    Objective:
+        Dynamically resolve optimal DataLoader worker count in a server-agnostic manner across
+        SLURM cluster environments, multi-core servers, and local dev workstations.
+
+    Inputs:
+        requested_workers (int | None): Explicitly requested worker count. If non-negative, respects this value.
+
+    Outputs:
+        int: Resolved optimal number of DataLoader worker processes.
+    """
+    if requested_workers is not None and requested_workers >= 0:
+        return requested_workers
+    if "SLURM_CPUS_PER_TASK" in os.environ:
+        # On SLURM compute nodes (e.g. peteroa with 16 CPUs per task), reserve 2 cores for main thread and GPU ops
+        slurm_cpus = int(os.environ["SLURM_CPUS_PER_TASK"])
+        return max(1, slurm_cpus - 2)
+    # On interactive dev workstations or local desktops, use CPU count minus 1 (capped at 8)
+    cpu_cnt = os.cpu_count() or 4
+    return max(1, min(8, cpu_cnt - 1))
+
+
 class ReXDataset(Dataset):
     """
     Native Resolution 3D CT Dataset for ReXGroundingCT fine-tuning.
     Loads images, 4D segmentations, and Qwen text embeddings, applying
-    MONAI patch-based cropping, intensity Z-score normalization, fast SSD caching,
+    MONAI patch-based cropping, intensity Z-score normalization, optional fast SSD caching,
     85% foreground oversampling, laterality-safe augmentations, and 2+1 prompt sampling.
     """
 
@@ -51,14 +77,15 @@ class ReXDataset(Dataset):
         patch_size: int = 192,
         num_positive_prompts: int = 2,
         num_negative_prompts: int = 1,
-        pos_ratio: float = 0.85
+        pos_ratio: float = 0.85,
+        use_volume_cache: bool = False
     ):
         """
         Signature:
-            __init__(dataset_json: str, split: str, img_dir: str, seg_dir: str, cache_dir: str, is_train: bool, patch_size: int, num_positive_prompts: int, num_negative_prompts: int, pos_ratio: float) -> None
+            __init__(dataset_json: str, split: str, img_dir: str, seg_dir: str, cache_dir: str, is_train: bool, patch_size: int, num_positive_prompts: int, num_negative_prompts: int, pos_ratio: float, use_volume_cache: bool) -> None
 
         Objective:
-            Initialize ReXDataset instance, setup MONAI augmentation pipeline, Z-score intensity normalization, and SSD cache hash.
+            Initialize ReXDataset instance, setup MONAI augmentation pipeline, Z-score intensity normalization, and optional volume caching.
 
         Inputs:
             dataset_json (str): Path to dataset.json metadata.
@@ -71,6 +98,7 @@ class ReXDataset(Dataset):
             num_positive_prompts (int): Number of positive findings to sample per scan. Default 2.
             num_negative_prompts (int): Number of negative absent findings to sample per scan. Default 1.
             pos_ratio (float): Probability of sampling foreground lesion patch (default: 0.85).
+            use_volume_cache (bool): Whether to cache full volumes on disk/tmpfs. Default False (streaming mode).
 
         Outputs:
             None
@@ -83,6 +111,7 @@ class ReXDataset(Dataset):
         self.num_positive_prompts = num_positive_prompts
         self.num_negative_prompts = num_negative_prompts
         self.pos_ratio = pos_ratio
+        self.use_volume_cache = use_volume_cache
         
         with open(dataset_json, 'r') as f:
             data = json.load(f)
@@ -161,37 +190,33 @@ class ReXDataset(Dataset):
         img_path = os.path.join(self.img_dir, f"{scan_id}.nii.gz")
         seg_path = os.path.join(self.seg_dir, f"{scan_id}.nii.gz")
         
-        # Fast local SSD-based volume caching
-        tmp_prep_dir = os.getenv("TMP_PREP_DIR", "/tmp/rexgroundingct_preprocessed")
-        ssd_cache_dir = os.path.join(
-            tmp_prep_dir,
-            f"volume_cache_{self.preprocessing_hash}"
-        )
-        os.makedirs(ssd_cache_dir, exist_ok=True)
-        
-        cache_img_path = os.path.join(ssd_cache_dir, f"{scan_id}_img.pt")
-        cache_seg_path = os.path.join(ssd_cache_dir, f"{scan_id}_seg.pt")
-        
         loaded_from_cache = False
-        if os.path.exists(cache_img_path) and os.path.exists(cache_seg_path):
-            try:
-                img_normalized = torch.load(cache_img_path, map_location='cpu')
-                seg_cropped = torch.load(cache_seg_path, map_location='cpu')
-                if isinstance(img_normalized, torch.Tensor) and isinstance(seg_cropped, torch.Tensor):
-                    loaded_from_cache = True
-            except Exception:
-                # Invalidate broken/corrupted cache files
-                if os.path.exists(cache_img_path):
-                    try:
-                        os.remove(cache_img_path)
-                    except OSError:
-                        pass
-                if os.path.exists(cache_seg_path):
-                    try:
-                        os.remove(cache_seg_path)
-                    except OSError:
-                        pass
-                loaded_from_cache = False
+        if self.use_volume_cache:
+            tmp_prep_dir = os.getenv("TMP_PREP_DIR", "/tmp/rexgroundingct_preprocessed")
+            ssd_cache_dir = os.path.join(
+                tmp_prep_dir,
+                f"volume_cache_{self.preprocessing_hash}"
+            )
+            os.makedirs(ssd_cache_dir, exist_ok=True)
+            
+            cache_img_path = os.path.join(ssd_cache_dir, f"{scan_id}_img.pt")
+            cache_seg_path = os.path.join(ssd_cache_dir, f"{scan_id}_seg.pt")
+            
+            if os.path.exists(cache_img_path) and os.path.exists(cache_seg_path):
+                try:
+                    img_normalized = torch.load(cache_img_path, map_location='cpu')
+                    seg_cropped = torch.load(cache_seg_path, map_location='cpu')
+                    if isinstance(img_normalized, torch.Tensor) and isinstance(seg_cropped, torch.Tensor):
+                        loaded_from_cache = True
+                except Exception:
+                    # Invalidate broken/corrupted cache files
+                    for cache_f in [cache_img_path, cache_seg_path]:
+                        if os.path.exists(cache_f):
+                            try:
+                                os.remove(cache_f)
+                            except OSError:
+                                pass
+                    loaded_from_cache = False
 
         if not loaded_from_cache:
             # Load canonical RAS physical coordinate space via Centralized Spatial Engine
@@ -212,21 +237,22 @@ class ReXDataset(Dataset):
             img_normalized = torch.as_tensor(img_normalized, dtype=torch.float32)
             seg_cropped = torch.as_tensor(seg_cropped, dtype=torch.float32)
             
-            # Atomic save to prevent corruption from concurrent workers or premature termination
-            tmp_img = f"{cache_img_path}.tmp_{os.getpid()}_{idx}"
-            tmp_seg = f"{cache_seg_path}.tmp_{os.getpid()}_{idx}"
-            try:
-                torch.save(img_normalized, tmp_img)
-                torch.save(seg_cropped, tmp_seg)
-                os.replace(tmp_img, cache_img_path)
-                os.replace(tmp_seg, cache_seg_path)
-            except Exception:
-                for tmp_f in [tmp_img, tmp_seg]:
-                    if os.path.exists(tmp_f):
-                        try:
-                            os.remove(tmp_f)
-                        except OSError:
-                            pass
+            if self.use_volume_cache:
+                # Atomic save to prevent corruption from concurrent workers or premature termination
+                tmp_img = f"{cache_img_path}.tmp_{os.getpid()}_{idx}"
+                tmp_seg = f"{cache_seg_path}.tmp_{os.getpid()}_{idx}"
+                try:
+                    torch.save(img_normalized, tmp_img)
+                    torch.save(seg_cropped, tmp_seg)
+                    os.replace(tmp_img, cache_img_path)
+                    os.replace(tmp_seg, cache_seg_path)
+                except Exception:
+                    for tmp_f in [tmp_img, tmp_seg]:
+                        if os.path.exists(tmp_f):
+                            try:
+                                os.remove(tmp_f)
+                            except OSError:
+                                pass
         
         # Load pre-computed Qwen text embeddings
         cache_path = os.path.join(self.cache_dir, f"{scan_id}.pt")

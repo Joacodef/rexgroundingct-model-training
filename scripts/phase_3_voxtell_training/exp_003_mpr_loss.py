@@ -51,6 +51,7 @@ from scripts.phase_3_voxtell_training.common import (
     get_unwrapped_state_dict,
     ddp_step,
     ReXDataset,
+    resolve_num_workers,
     load_voxtell_model
 )
 
@@ -240,7 +241,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_mpr_weight", type=float, default=0.5, help="Maximum MPR consistency loss weight (default: 0.5)")
     parser.add_argument("--patch_size", type=int, default=192, help="Patch size for MONAI spatial crop (default: 192)")
     parser.add_argument("--device", type=str, default="cuda:0", help="Computation device for standalone run (e.g. cuda:0)")
-    parser.add_argument("--num_workers", type=int, default=2, help="Number of DataLoader workers per GPU")
+    parser.add_argument("--num_workers", type=int, default=None, help="Number of DataLoader workers per GPU (default: auto-resolved based on SLURM / CPU count)")
+    parser.add_argument("--use_volume_cache", action="store_true", default=False, help="Enable on-disk full-volume caching (default: False, streaming mode)")
     parser.add_argument("--resume", action="store_true", help="Resume training from latest_model.pt if available")
     parser.add_argument("--wandb", action="store_true", default=True, help="Enable Weights & Biases logging (default: True)")
     parser.add_argument("--no_wandb", dest="wandb", action="store_false", help="Disable Weights & Biases logging")
@@ -407,6 +409,13 @@ def main() -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
     
     try:
+        # Resolve server-agnostic DataLoader workers
+        resolved_workers = resolve_num_workers(args.num_workers)
+        logger.info(
+            f"Resolved DataLoader workers: {resolved_workers} "
+            f"(SLURM: {'SLURM_CPUS_PER_TASK' in os.environ}, Host CPUs: {os.cpu_count()}, Volume Cache: {args.use_volume_cache})"
+        )
+
         # Initialize Dataset
         train_dataset = ReXDataset(
             dataset_json=args.dataset_json,
@@ -415,7 +424,8 @@ def main() -> None:
             seg_dir=args.seg_dir,
             cache_dir=args.cache_dir,
             is_train=True,
-            patch_size=args.patch_size
+            patch_size=args.patch_size,
+            use_volume_cache=args.use_volume_cache
         )
         
         if is_distributed:
@@ -430,8 +440,10 @@ def main() -> None:
                 train_dataset,
                 batch_size=args.batch_size,
                 sampler=train_sampler,
-                num_workers=args.num_workers,
-                pin_memory=True
+                num_workers=resolved_workers,
+                pin_memory=torch.cuda.is_available(),
+                persistent_workers=(resolved_workers > 0),
+                prefetch_factor=2 if resolved_workers > 0 else None
             )
         else:
             train_sampler = None
@@ -439,8 +451,10 @@ def main() -> None:
                 train_dataset,
                 batch_size=args.batch_size,
                 shuffle=True,
-                num_workers=args.num_workers,
-                pin_memory=True
+                num_workers=resolved_workers,
+                pin_memory=torch.cuda.is_available(),
+                persistent_workers=(resolved_workers > 0),
+                prefetch_factor=2 if resolved_workers > 0 else None
             )
         
         logger.info(f"Loaded training split: {len(train_dataset)} total scans.")

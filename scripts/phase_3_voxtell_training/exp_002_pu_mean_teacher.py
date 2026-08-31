@@ -455,7 +455,15 @@ def main() -> None:
         
         start_epoch = 1
         best_loss = float("inf")
+        best_model_path = output_dir / "best_model.pt"
         latest_model_path = output_dir / "latest_model.pt"
+        if best_model_path.exists():
+            try:
+                best_ckpt = torch.load(best_model_path, map_location="cpu", weights_only=False)
+                if "loss" in best_ckpt:
+                    best_loss = best_ckpt["loss"]
+            except Exception:
+                pass
 
         if args.resume and latest_model_path.exists():
             logger.info(f"Resuming training from checkpoint: {latest_model_path}")
@@ -464,9 +472,8 @@ def main() -> None:
             teacher_model.load_state_dict(checkpoint["teacher_state_dict"])
             if "optimizer_state_dict" in checkpoint:
                 optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            if "loss" in checkpoint:
-                best_loss = checkpoint["loss"]
             start_epoch = checkpoint.get("epoch", 0) + 1
+            scheduler.last_epoch = start_epoch - 1
             logger.info(f"Successfully resumed from epoch {start_epoch}, previous best loss: {best_loss:.4f}")
         
         # Wrap student in DistributedDataParallel

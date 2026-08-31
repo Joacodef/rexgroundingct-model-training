@@ -145,7 +145,7 @@ def main():
             text_embed = predictor.text_backbone(**tokens)
             embeddings = last_token_pool(text_embed.last_hidden_state, tokens['attention_mask'])
             embeddings = embeddings.view(1, n_prompts, -1)
-        return embeddings.to(predictor.device)
+        return embeddings.to(device=predictor.device, dtype=torch.float32)
 
     predictor.embed_text_prompts = embed_text_prompts_cpu_safe
 
@@ -280,7 +280,7 @@ def main():
         if cached_emb_path.exists():
             embeddings = torch.load(cached_emb_path, map_location=device).unsqueeze(0).to(torch.float32)
         else:
-            embeddings = predictor.embed_text_prompts(text_prompts)
+            embeddings = predictor.embed_text_prompts(text_prompts).to(device=device, dtype=torch.float32)
 
         with torch.no_grad():
             logits = predictor.predict_sliding_window_return_logits(data_tensor, embeddings).cpu()

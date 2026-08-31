@@ -304,10 +304,6 @@ def main():
         # Explicit memory cleanup
         del img_ras, ras_nii, probs_nnunet_crop, probs_nnunet_full, probs_ras
         gc.collect()
-        try:
-            ctypes.CDLL("libc.so.6").malloc_trim(0)
-        except Exception:
-            pass
 
     # Synchronize all ranks at completion
     if is_distributed and dist.is_available() and dist.is_initialized():

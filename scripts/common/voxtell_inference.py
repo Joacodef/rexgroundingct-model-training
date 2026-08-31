@@ -40,6 +40,8 @@ if str(ROOT_DIR) not in sys.path:
 from voxtell.inference.predictor import VoxTellPredictor
 from scripts.common.orientation import load_nifti_ras, save_nifti
 from scripts.phase_3_voxtell_training.common.distributed import init_distributed, cleanup_distributed
+from scripts.config import TEXT_CACHE_DIR
+from acvl_utils.cropping_and_padding.padding import pad_nd_image
 
 
 def main():
@@ -124,7 +126,7 @@ def main():
             embed_text_prompts_cpu_safe(text_prompts: List[str] | str) -> torch.Tensor
 
         Objective:
-            Computes text embeddings using CPU-offloaded Qwen2-0.5B text backbone to prevent
+            Computes text embeddings using CPU-offloaded Qwen3-Embedding-4B text backbone to prevent
             CUDA VRAM OOM while returning final prompt tensor embeddings on GPU device.
 
         Args:
@@ -146,6 +148,35 @@ def main():
         return embeddings.to(predictor.device)
 
     predictor.embed_text_prompts = embed_text_prompts_cpu_safe
+
+    # Ensure robust, numerical-stable sliding window without fp16 underflow/overflow NaNs
+    @torch.inference_mode()
+    def safe_predict_sliding_window_return_logits(input_image: torch.Tensor, text_embeddings: torch.Tensor) -> torch.Tensor:
+        """
+        Signature:
+            safe_predict_sliding_window_return_logits(input_image: torch.Tensor, text_embeddings: torch.Tensor) -> torch.Tensor
+
+        Objective:
+            Executes sliding-window inference with autocast disabled on CUDA to guarantee numerical stability
+            and prevent float16 underflow/overflow NaNs during Gaussian weighting.
+
+        Inputs:
+            input_image (torch.Tensor): 4D input volume tensor (C, Z, Y, X).
+            text_embeddings (torch.Tensor): Prompt text embedding tensor (1, N_prompts, D_embed).
+
+        Outputs:
+            torch.Tensor: Predicted logits tensor across full volume.
+        """
+        predictor.network = predictor.network.to(predictor.device)
+        data, slicer_revert_padding = pad_nd_image(input_image, predictor.patch_size, 'constant', {'value': 0}, True, None)
+        slicers = predictor._internal_get_sliding_window_slicers(data.shape[1:])
+        with torch.autocast('cuda', enabled=False) if predictor.device.type == 'cuda' else torch.no_grad():
+            predicted_logits = predictor._internal_predict_sliding_window_return_logits(
+                data, text_embeddings, slicers, predictor.perform_everything_on_device
+            )
+        return predicted_logits[(slice(None), *slicer_revert_padding[1:])]
+
+    predictor.predict_sliding_window_return_logits = safe_predict_sliding_window_return_logits
     
     # Load custom checkpoint weights if specified
     if args.checkpoint:
@@ -173,6 +204,9 @@ def main():
                 print("Loaded raw state_dict from checkpoint.")
             
         predictor.network.load_state_dict(state_dict)
+
+    predictor.network = predictor.network.to(device)
+    predictor.network.eval()
 
     # Load Ground Truth metadata
     with open(dataset_json, 'r') as f:
@@ -241,7 +275,12 @@ def main():
 
         # Step 3: Preprocess and run sliding window inference on nnUNet-ordered image array (Z, Y, X)
         data_tensor, bbox, orig_shape = predictor.preprocess(img_nnunet)
-        embeddings = predictor.embed_text_prompts(text_prompts)
+        
+        cached_emb_path = TEXT_CACHE_DIR / f"{scan_id}.pt"
+        if cached_emb_path.exists():
+            embeddings = torch.load(cached_emb_path, map_location=device).unsqueeze(0).to(torch.float32)
+        else:
+            embeddings = predictor.embed_text_prompts(text_prompts)
 
         with torch.no_grad():
             logits = predictor.predict_sliding_window_return_logits(data_tensor, embeddings).cpu()

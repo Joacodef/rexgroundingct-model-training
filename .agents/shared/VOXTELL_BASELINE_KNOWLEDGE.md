@@ -26,8 +26,7 @@ The authors explicitly identified that semantic pre-training alone cannot solve 
 * **Prompt Transformer Decoder**: 6 DETR-style transformer decoder layers (8 attention heads, LayerNorm pre-normalization, hidden dim 2048) performing cross-attention between text query embeddings ($Q$) and 3D vision bottleneck features ($K, V$).
 * **MaskFormer Multi-Stage Decoder & Einsum Fusion**: `VoxTellDecoder` upsamples spatial features across 5 resolution stages, fusing text query embeddings at every stage via tensor contraction (`torch.einsum('b c h w d, b n c -> b n h w d')`).
 * **Text Encoder**:
-  - *Paper Specification*: Frozen `Qwen/Qwen3-Embedding-4B` ($D_{\text{text}} = 2560$).
-  - *Open-Source Release (`v1.1`)*: Frozen `Qwen2-0.5B` instruction-tuned model.
+  - *Architecture & Pretrained Model*: Frozen `Qwen/Qwen3-Embedding-4B` ($D_{\text{text}} = 2560$). Both the publication paper and the official open-source `v1.1` release (`mrokuss/VoxTell`) use this 2560-dimensional embedding model with `project_text_embed: (2048, 2560)`.
   - *Instruction Wrapping Template*:  
     `"Instruct: Given an anatomical term query, retrieve the precise anatomical entity and location it represents\nQuery: {text}"`
   - *Token Pooling*: Hidden state of the last non-padded token extracted via `last_token_pool`.

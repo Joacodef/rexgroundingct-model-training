@@ -78,7 +78,7 @@ def extract_all_findings_by_scan(dataset_json_path: Path, splits: Optional[List[
 def precompute_embeddings(
     scans_dict: Dict[str, List[str]],
     cache_dir: Path,
-    model_name: str = "Qwen/Qwen2-0.5B",
+    model_name: str = "Qwen/Qwen3-Embedding-4B",
     device: str = "cuda:0",
     batch_size: int = 64,
     overwrite: bool = False,
@@ -92,7 +92,7 @@ def precompute_embeddings(
     Args:
         scans_dict (Dict[str, List[str]]): Mapping of scan_id to prompt lists.
         cache_dir (Path): Destination cache directory.
-        model_name (str): Hugging Face text model name (default: 'Qwen/Qwen2-0.5B').
+        model_name (str): Hugging Face text model name (default: 'Qwen/Qwen3-Embedding-4B').
         device (str): Computation device.
         batch_size (int): Batch size for text embedding forward pass.
         overwrite (bool): Whether to overwrite existing cache files.
@@ -133,7 +133,7 @@ def precompute_embeddings(
 
             outputs = text_backbone(**tokens)
             batch_embeds = last_token_pool(outputs.last_hidden_state, tokens["attention_mask"])
-            batch_embeds = batch_embeds.cpu()
+            batch_embeds = batch_embeds.cpu().to(torch.float32)
 
             for p, emb in zip(batch_prompts, batch_embeds):
                 unique_prompts[p] = emb
@@ -160,7 +160,7 @@ def main():
     parser.add_argument("--dataset_json", type=str, default=str(DATASET_JSON), help="Path to dataset.json")
     parser.add_argument("--cache_dir", type=str, default=str(TEXT_CACHE_DIR), help="Destination cache directory")
     parser.add_argument("--splits", nargs="+", default=["train", "val"], help="Splits to process")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2-0.5B", help="Text backbone model name")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-Embedding-4B", help="Text backbone model name")
     parser.add_argument("--device", type=str, default="cuda:0", help="Computation device")
     parser.add_argument("--batch_size", type=int, default=64, help="Embedding batch size")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing cache files")

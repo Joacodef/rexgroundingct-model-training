@@ -30,11 +30,18 @@ To prevent hallucinated or outdated AI summaries from superseding ground-truth s
 
 ## 🚫 Execution & Modeling Contracts
 
-### 1. Persistent Process Execution (Mandatory Detached TMUX)
-**NEVER run training loops, batch inferences, or long evaluations using standard subshell jobs or naked nohup commands.** IDE reconnects and container reboots will kill processes bound to pseudo-terminals.
-You MUST always run persistent tasks inside a dedicated, named **detached `tmux` session**:
-* **Detached Tmux Execution (Mandatory Standard)**: `tmux new-session -d -s <session_name> "cd <repo_root> && <command> 2>&1 | tee <log_file>"`
-* **Inspection**: `tmux attach -t <session_name>` or `tmux ls`
+### 1. Workload Execution & Compute Allocation Contract
+
+#### A. SLURM-Governed Production Clusters (e.g. `peteroa`)
+* **Mandatory SLURM Submission (`sbatch`)**: On compute nodes governed by SLURM cgroups, **NEVER run training loops, batch inferences, multi-scan evaluations, or persistent Python jobs directly on the host or login shell**. Unallocated GPU compute running directly on the host is strictly prohibited and will be terminated by the cluster resource controller or node watchdog.
+* **Batch Workloads (`sbatch`)**: All production training, fine-tuning, and multi-scan batch inference runs MUST be submitted via SLURM (`sbatch bash_scripts/<job_script>.slurm`).
+* **Interactive Debugging (`srun` + `tmux`)**: For interactive debugging, allocate an interactive GPU shell via `srun` (with project account and QoS flags per `CLUSTER_SETUP.md`), and run commands inside a named `tmux` session within that allocated container.
+* **Job Monitoring**: Monitor jobs via `squeue -u <user>` and inspect output logs in `logs/<phase>/<exp_name>/slurm_<job_id>.out`.
+
+#### B. Standalone Development & Prototyping Nodes (Non-SLURM)
+* **Persistent Process Execution (Mandatory Detached TMUX)**: On standalone development servers lacking a cluster scheduler, NEVER run persistent tasks in standard subshell jobs or naked nohup commands. Always execute persistent workloads inside a dedicated, named detached `tmux` session:
+  * **Detached Tmux Execution**: `tmux new-session -d -s <session_name> "cd <repo_root> && <command> 2>&1 | tee <log_file>"`
+  * **Inspection**: `tmux attach -t <session_name>` or `tmux ls`
 
 ### 2. Hardware Isolation Contract
 * All fine-tuning and inference operations must respect host GPU isolation managed via environment variables (`CUDA_VISIBLE_DEVICES=1`), as detailed in local `server_documentation.txt` and `STATUS.md`.

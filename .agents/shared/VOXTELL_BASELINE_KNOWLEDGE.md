@@ -63,31 +63,13 @@ The authors explicitly identified that semantic pre-training alone cannot solve 
 
 ---
 
-## ⚠️ 5. Empirical Discovery: The Negative Instance Suppression Problem
+## 🛠️ 5. Official Inference Protocols & Specifications
 
-### A. The Sparse-to-Exhaustive Annotation Disparity
-1. **Sparsely Labeled Training Ground Truth**: The 2,992-scan ReXGroundingCT training set is *partially annotated* (only a subset of findings are annotated per scan, while remaining true lesions are unannotated).
-2. **Naïve Supervised Penalty**: When fine-tuning with naïve supervised BCE/Dice over full volumes (`exp_001`), the loss actively penalizes the model for correctly predicting true lesions in unannotated regions as "false positives".
-3. **Catastrophic Empirical Collapse (Exp 001 Audit)**:
-   - Naïve 6-epoch supervised fine-tuning collapsed the validation metric from **0.0988** (Zero-Shot) down to **0.0475 Average Dice** (-51.9%).
-   - On **Category 2d (Pulmonary nodules/masses, 132 findings)**, Hit Rate collapsed from **24.24% down to 3.79%**!
+* **Sliding-Window Inference**: 3D sliding-window patch-based inference using $192 \times 192 \times 192$ patches.
+* **Gaussian Weighting**: Spatial Gaussian weighting mask with $\sigma\_scale = 1/8$ to blend overlapping patch boundaries smoothly without stitching seams.
+* **Tile Overlap**: Default evaluation uses `tile_step_size = 0.5` (50% spatial overlap along $Z, Y, X$).
+* **Continuous Probabilities & Thresholding**: Model outputs continuous sigmoid probabilities; standard binarization threshold is $p > 0.5$.
+* **Text Embedding Conditioning**: Text queries are wrapped with the official instruction template before Qwen embedding pooling:
+  `"Instruct: Given an anatomical term query, retrieve the precise anatomical entity and location it represents\nQuery: {text}"`
+* **Coordinate Orientation**: The official VoxTell predictor assumes input volumes formatted with depth-first ordering $(Z, Y, X)$. Output predictions must be mapped back to native scan affine orientation.
 
-### B. Methodological Solutions for Phase 3
-To resolve this suppression without relying on closed proprietary pseudo-instance datasets:
-1. **Exp 002 (Positive-Unlabeled Mean Teacher / SPOCO)**:
-   - Restrict supervised Dice/BCE loss strictly to dilated positive ROIs surrounding annotated lesions.
-   - Apply Mean Teacher EMA consistency loss on unannotated background voxels to preserve zero-shot recall.
-2. **Exp 003 (Multi-Planar Regularization / MPR Loss)**:
-   - Compute 2D max-projection consistency along Axial, Coronal, and Sagittal planes with the Teacher to penalize dispersed noise while allowing valid 3D unannotated structures to emerge.
-
----
-
-## 🛠️ 6. Inference & Spatial Pipeline Protocols
-
-1. **Centralized Spatial Engine (`scripts/common/orientation.py`)**:
-   - All input CT volumes and ground truth masks are canonicalized to NIfTI `RAS` physical coordinates at load time via `load_nifti_ras()`.
-   - Predictions are converted back to native scan affine orientation (`LPS`) on disk via `save_nifti()`, matching ground-truth mask format 100%.
-2. **Centralized Universal Inference Engine (`scripts/common/voxtell_inference.py`)**:
-   - Supports single-GPU and server-agnostic multi-GPU DDP sharding (`torchrun --nproc_per_node=N`).
-   - Sliding-window Gaussian weighting ($\sigma\_scale = 1/8$), default `tile_step_size = 0.5` (50% overlap).
-   - Binarization cutoff: continuous sigmoid probabilities thresholded at $p > 0.5$.

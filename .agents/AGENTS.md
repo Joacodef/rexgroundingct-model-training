@@ -9,10 +9,9 @@ As the AI pair-programming assistant for the ReXGroundingCT Model Training & Fin
 
 ## Mandatory File Consultation Protocol
 At the start of **EVERY SINGLE SESSION**, you MUST immediately load, read, and follow the active documents inside the `.agents/` folder:
-1. `STATUS.md` — Host-specific macro progress matrix tracking advancement across Phase 2 & 3, experiment logs, and local server storage.
-2. `HANDSHAKE.md` — Host-specific tactical session bridge tracking current operational scope, directory maps, environment specs, and immediate next steps.
-3. `shared/MASTER_PLAN.md` — Global scientific and technical roadmap.
-4. `shared/PHASE_1_DATA_ANALYSIS_SUMMARY.md` — Consolidated Phase 1 empirical data distributions, spatial coordinates, HU radiodensity spectrum, morphological topology, and multi-label co-occurrences.
+1. `STATUS.md` — Host-specific unified operational matrix tracking macro progress (Phase 1–4), local server storage paths, active job tracking, and the tactical session bridge with immediate next steps.
+2. `shared/MASTER_PLAN.md` — Global scientific and technical roadmap.
+3. `shared/PHASE_1_DATA_ANALYSIS_SUMMARY.md` — Consolidated Phase 1 empirical data distributions, spatial coordinates, HU radiodensity spectrum, morphological topology, and multi-label co-occurrences.
 
 ---
 

@@ -2,15 +2,6 @@
 
 **Primary Goal:** Top-3 on the leaderboard (September 2026) supported by a comprehensive internal group technical report built on rigorous data understanding and zero-shot baseline inference mastery.
 
-> [!IMPORTANT]
-> **Phased Research Roadmap**:
-> 1. **Phase 1 — ReXGroundingCT Data Profiling**: 3D CT metadata, sparse vs. exhaustive mask profiling, 14 finding categories, component topology, prompt syntax, and internal group technical report.
-> 2. **Phase 2 — Baselines & Preprocessing Audit**:
->    - **Phase 2A — Statistical / Rule-Based Prior Baseline**: Non-neural prior baseline leveraging Phase 1 empirical data distributions to establish a non-learning lower-bound benchmark.
->    - **Phase 2B — VoxTell Zero-Shot Baseline & Audit**: Official reorientation pipeline, sliding window tile overlap, per-category continuous logit threshold optimization, and failure mode profiling.
-> 3. **Phase 3 — VoxTell Model Fine-Tuning**: Target VoxTell fine-tuning experiments exploring Naïve Supervised Baseline, Positive-Unlabeled (PU) Mean Teacher Loss, and Multi-View Pseudo-Label Regularization (MPR) Loss.
-> 4. **Phase 4 — Alternative Architectures & Unbiased Models**: Exploration and zero-leakage training of alternative 3D vision-language grounding models (e.g. SegVol, SAM-Med3D, or Swin UNETR multi-modal backbones) not pre-trained on ReXGroundingCT data, including evaluation of true SPOCO (pixel embeddings with metric learning clustering).
-
 ---
 
 ## 🗓️ Phased Research Roadmap & Deliverables
@@ -62,9 +53,8 @@
   * **Targeted Loss Benchmarking**: Evaluate 3 specific loss strategies to address sparse-to-exhaustive annotation disparity on VoxTell:
     * **Exp 001**: Naïve Supervised Baseline (BCE + Dice).
     * **Exp 002**: Positive-Unlabeled (PU) Mean Teacher Loss.
-    * **Exp 003**: Multi-View Pseudo-Label Regularization (MPR) Loss.
+    * **Exp 003**: Multi-Planar Projection Regularization (MPR) Loss.
   * **Fast Volume Acceleration**: Execute training using fast local SSD volume caching.
-  * **Dynamic Post-Processing & Ensembling**: Multi-checkpoint ensembling and category-validated post-processing.
 
 * **Key Deliverables**:
   1. *VoxTell Fine-Tuned Model Checkpoints*: Validated VoxTell trainer and high-performing model weights.

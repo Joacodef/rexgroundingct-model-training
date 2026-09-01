@@ -3,12 +3,9 @@
 SCRIPT:         VoxTell Multi-Planar Projection Regularization (MPR) Fine-Tuning
 PHASE:          Phase 3 — Model Fine-Tuning & Loss Hypotheses Benchmarking
 LOCATION:       scripts/phase_3_voxtell_training/exp_003_mpr_loss.py
-OBJECTIVE:      Fine-tune VoxTell using 3D Multi-Planar Projection Reconstruction (MPR) 
-                consistency loss with exponential ramp-up to penalize dispersed false 
-                positives while resolving instance suppression bias (Gao et al., 2022).
-                Supports server-agnostic multi-GPU (DDP) and single-GPU execution.
-USAGE:          Single-GPU: python scripts/phase_3_voxtell_training/exp_003_mpr_loss.py
-                Multi-GPU:  torchrun --nproc_per_node=N scripts/phase_3_voxtell_training/exp_003_mpr_loss.py
+OBJECTIVE:      Fine-tune VoxTell using 3D Multi-Planar Projection Regularization (MPR) 
+                consistency loss with exponential ramp-up. Builds on the Student-Teacher 
+                Mean Teacher framework of Exp 002, but replaces 3D voxel-wise MSE with 
 ===============================================================================
 """
 
@@ -126,13 +123,11 @@ def compute_mpr_consistency_loss(student_probs: torch.Tensor, teacher_probs: tor
 
     Objective:
         Compute 3D Multi-Planar Projection (MPR) consistency loss across unannotated background voxels.
-        Applies max-intensity projections along Axial (Z), Coronal (Y), and Sagittal (X) planes to amplify 
-        dispersed false positive penalties without penalizing true unannotated instances (Gao et al., 2022).
+        Applies 2D max-intensity projections along Axial (Z), Coronal (Y), and Sagittal (X) planes to compute
+        projection MSE against the Teacher, heavily penalizing dispersed false positive noise while bypassing 
+        3D volume dilution (Gao et al., 2022).
 
     Inputs:
-        student_probs (torch.Tensor): Student network probability predictions (B, F, Z, Y, X).
-        teacher_probs (torch.Tensor): Teacher network probability predictions (B, F, Z, Y, X).
-        roi_mask (torch.Tensor): Dilated boolean ROI mask tensor isolating annotated regions.
 
     Outputs:
         torch.Tensor: Scalar MPR consistency loss averaged across the 3 orthogonal projection planes.

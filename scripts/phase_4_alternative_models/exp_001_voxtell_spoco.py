@@ -1,15 +1,17 @@
 """
 ===============================================================================
-SCRIPT:         True 3D Medical SPOCO Model Fine-Tuning (VoxTell-SPOCO Foundation)
+SCRIPT:         VoxTell-SPOCO Model Fine-Tuning (SPOCO Foundation)
 PHASE:          Phase 4 — Alternative Architectures & Unbiased Models
-LOCATION:       scripts/phase_4_alternative_models/exp_001_true_spoco.py
-OBJECTIVE:      Fine-tune VoxTell adapted for True Sparse Object-level Consistency
+LOCATION:       scripts/phase_4_alternative_models/exp_001_voxtell_spoco.py
+OBJECTIVE:      Fine-tune VoxTell adapted for Sparse Object-level Consistency
                 (SPOCO, Wolny et al., CVPR 2022). Maps 3D CT voxels into a continuous
                 16D metric embedding space on a unit hypersphere, regularized via
-                Student-Teacher unannotated consistency to resolve instance suppression.
+                Student-Teacher unannotated consistency with iterative coverage suppression,
+                multi-instance connected-component anchoring, dual-view intensity perturbations,
+                and background repulsion to resolve instance suppression.
                 Supports server-agnostic multi-GPU (DDP) and single-GPU execution.
-USAGE:          Single-GPU: python scripts/phase_4_alternative_models/exp_001_true_spoco.py
-                Multi-GPU:  torchrun --nproc_per_node=N scripts/phase_4_alternative_models/exp_001_true_spoco.py
+USAGE:          Single-GPU: python scripts/phase_4_alternative_models/exp_001_voxtell_spoco.py
+                Multi-GPU:  torchrun --nproc_per_node=N scripts/phase_4_alternative_models/exp_001_voxtell_spoco.py
 ===============================================================================
 """
 
@@ -70,9 +72,40 @@ from scripts.phase_4_alternative_models.common import (
 )
 
 # Experiment log directory pairing
-EXP_LOG_DIR = LOGS_DIR / "phase_4_alternative_models" / "exp_001_true_spoco"
+EXP_LOG_DIR = LOGS_DIR / "phase_4_alternative_models" / "exp_001_voxtell_spoco"
 EXP_LOG_DIR.mkdir(parents=True, exist_ok=True)
-logger = logging.getLogger("exp_001_true_spoco")
+logger = logging.getLogger("exp_001_voxtell_spoco")
+
+
+def apply_student_view_perturbation(images: torch.Tensor) -> torch.Tensor:
+    """
+    Signature:
+        apply_student_view_perturbation(images: torch.Tensor) -> torch.Tensor
+
+    Objective:
+        Apply lightweight, GPU-accelerated intensity perturbations (additive Gaussian
+        noise and stochastic intensity scaling/shifting) to generate a distinct Student view
+        while preserving 100% identical 3D spatial voxel coordinates with the Teacher view.
+
+    Inputs:
+        images (torch.Tensor): 3D CT volume tensor of shape (B, 1, Z, Y, X).
+
+    Outputs:
+        torch.Tensor: Perturbed 3D CT volume tensor of shape (B, 1, Z, Y, X).
+    """
+    B = images.shape[0]
+    device = images.device
+    dtype = images.dtype
+
+    # 1. Random intensity scaling in [0.90, 1.10]
+    scale = torch.empty((B, 1, 1, 1, 1), device=device, dtype=dtype).uniform_(0.90, 1.10)
+    # 2. Random intensity shift in [-0.10, 0.10]
+    shift = torch.empty((B, 1, 1, 1, 1), device=device, dtype=dtype).uniform_(-0.10, 0.10)
+    # 3. Additive Gaussian noise with std=0.03
+    noise = torch.randn_like(images) * 0.03
+
+    perturbed = (images * scale) + shift + noise
+    return perturbed
 
 
 def update_ema_variables(model: nn.Module, ema_model: nn.Module, alpha: float) -> None:
@@ -104,13 +137,19 @@ def evaluate_val_loss(
     model: nn.Module,
     val_loader: DataLoader,
     device: str,
-    sigma: float = 0.5,
+    delta_var: float = 0.5,
+    delta_dist: float = 1.5,
+    pmaps_threshold: float = 0.5,
+    sigma: float | None = None,
     w_con: float = 0.1,
+    w_unl_push: float = 0.1,
+    num_unlabeled_anchors: int = 8,
+    volume_threshold: float = 0.05,
     max_batches: int = 20,
 ) -> float:
     """
     Signature:
-        evaluate_val_loss(model: nn.Module, val_loader: DataLoader, device: str, sigma: float = 0.5, w_con: float = 0.1, max_batches: int = 20) -> float
+        evaluate_val_loss(model: nn.Module, val_loader: DataLoader, device: str, delta_var: float = 0.5, delta_dist: float = 1.5, pmaps_threshold: float = 0.5, sigma: float | None = None, w_con: float = 0.1, w_unl_push: float = 0.1, num_unlabeled_anchors: int = 8, volume_threshold: float = 0.05, max_batches: int = 20) -> float
 
     Objective:
         Compute validation SPOCO loss across a fixed subset of validation batches.
@@ -119,8 +158,14 @@ def evaluate_val_loss(
         model (nn.Module): Student model to evaluate.
         val_loader (DataLoader): Validation DataLoader.
         device (str): Computation device.
-        sigma (float): Gaussian bandwidth scaling factor. Default 0.5.
+        delta_var (float): Intra-cluster pull distance margin (default 0.5).
+        delta_dist (float): Inter-cluster push distance margin (default 1.5).
+        pmaps_threshold (float): Kernel probability cutoff (default 0.5).
+        sigma (float | None): Optional legacy sigma override.
         w_con (float): Consistency loss weight. Default 0.1.
+        w_unl_push (float): Unlabeled background push weight. Default 0.1.
+        num_unlabeled_anchors (int): Max unannotated anchors per volume. Default 8.
+        volume_threshold (float): Stopping fraction for unlabeled coverage. Default 0.05.
         max_batches (int): Maximum number of validation batches to evaluate. Default 20.
 
     Outputs:
@@ -142,9 +187,16 @@ def evaluate_val_loss(
                     student_embeds=s_embeds,
                     teacher_embeds=s_embeds,
                     targets=targets,
+                    delta_var=delta_var,
+                    delta_dist=delta_dist,
+                    pmaps_threshold=pmaps_threshold,
                     sigma=sigma,
                     w_con=w_con,
+                    w_unl_push=w_unl_push,
+                    num_unlabeled_anchors=num_unlabeled_anchors,
+                    volume_threshold=volume_threshold,
                     negative_supervision=True,
+                    return_details=False,
                 )
             if torch.isfinite(loss):
                 val_losses.append(loss.item())
@@ -161,13 +213,19 @@ def parse_args() -> argparse.Namespace:
     Objective:
         Parse CLI arguments for Phase 4 Exp 001 VoxTell-SPOCO fine-tuning.
     """
-    parser = argparse.ArgumentParser(description="Phase 4 Exp 001: True 3D Medical SPOCO Model Fine-Tuning")
+    parser = argparse.ArgumentParser(description="Phase 4 Exp 001: VoxTell-SPOCO Model Fine-Tuning")
     parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs (default: 50)")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size per GPU (default: 1)")
     parser.add_argument("--lr", type=float, default=1e-4, help="AdamW learning rate (default: 1e-4)")
     parser.add_argument("--alpha", type=float, default=0.999, help="EMA decay rate for Teacher model (default: 0.999)")
-    parser.add_argument("--sigma", type=float, default=0.5, help="Gaussian soft mask bandwidth sigma (default: 0.5)")
+    parser.add_argument("--delta_var", type=float, default=0.5, help="Intra-cluster pull margin (default: 0.5)")
+    parser.add_argument("--delta_dist", type=float, default=1.5, help="Inter-cluster push margin (default: 1.5)")
+    parser.add_argument("--kernel_threshold", type=float, default=0.5, help="Gaussian soft mask cutoff (default: 0.5)")
+    parser.add_argument("--sigma", type=float, default=None, help="Legacy Gaussian bandwidth sigma override")
     parser.add_argument("--w_con", type=float, default=0.1, help="Consistency loss weight for unlabeled anchors (default: 0.1)")
+    parser.add_argument("--w_unl_push", type=float, default=0.1, help="Unlabeled background push loss weight (default: 0.1)")
+    parser.add_argument("--max_unlabeled_anchors", type=int, default=8, help="Max unannotated anchors per volume (default: 8)")
+    parser.add_argument("--volume_threshold", type=float, default=0.05, help="Stopping fraction for uncovered background (default: 0.05)")
     parser.add_argument("--embedding_dim", type=int, default=16, help="Metric embedding dimension D (default: 16)")
     parser.add_argument("--dataset_json", type=str, default=str(DATASET_JSON), help="Path to dataset.json")
     parser.add_argument("--output_dir", type=str, default=str(EXP_LOG_DIR), help="Output directory for checkpoints and logs")
@@ -187,7 +245,7 @@ def main() -> None:
     Objective:
         Main entry point for Phase 4 Exp 001 VoxTell-SPOCO training pipeline.
         Initializes DDP, loads pre-trained foundation backbone weights, sets up
-        Student and Teacher models, and executes the True SPOCO optimization loop.
+        Student and Teacher models, and executes the SPOCO optimization loop.
     """
     args = parse_args()
     is_distributed, rank, local_rank, world_size, device_str = init_distributed()
@@ -198,9 +256,11 @@ def main() -> None:
 
     if rank == 0:
         logger.info("=" * 80)
-        logger.info("PHASE 4 — EXP 001: TRUE 3D MEDICAL SPOCO MODEL FINE-TUNING")
+        logger.info("PHASE 4 — EXP 001: VOXTELL-SPOCO MODEL FINE-TUNING")
         logger.info(f"Host Device: {device_str} | World Size: {world_size} | DDP: {is_distributed}")
-        logger.info(f"Epochs: {args.epochs} | LR: {args.lr} | Alpha (EMA): {args.alpha} | Sigma: {args.sigma} | W_con: {args.w_con}")
+        logger.info(f"Epochs: {args.epochs} | LR: {args.lr} | Alpha (EMA): {args.alpha}")
+        logger.info(f"Delta Var: {args.delta_var} | Delta Dist: {args.delta_dist} | Kernel Threshold: {args.kernel_threshold}")
+        logger.info(f"W_con: {args.w_con} | W_unl_push: {args.w_unl_push} | Max Anchors: {args.max_unlabeled_anchors}")
         logger.info(f"Metric Embedding Dim: {args.embedding_dim} | Model Dir: {MODEL_DIR}")
         logger.info("=" * 80)
 
@@ -210,7 +270,7 @@ def main() -> None:
             import wandb
             wandb.init(
                 project=args.wandb_project,
-                name="exp_001_true_spoco",
+                name="exp_001_voxtell_spoco",
                 config=vars(args),
             )
             logger.info("Initialized Weights & Biases telemetry.")
@@ -318,24 +378,33 @@ def main() -> None:
     # 4. Dry Run Mode
     if args.dry_run:
         if rank == 0:
-            logger.info("Executing single-batch dry run verification on VoxTell-SPOCO...")
+            logger.info("Executing single-batch dry run verification on VoxTell-SPOCO with dual-view perturbation...")
         batch = next(iter(train_loader))
         images = batch["image"].to(device, non_blocking=True)
         targets = batch["seg"].to(device, non_blocking=True)
         text_embeds = batch["text_embedding"].to(device, non_blocking=True)
 
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-            s_embeds = student_model(images, text_embeds, return_embeddings=True)
+            # Dual view perturbation: student receives perturbed view, teacher receives unperturbed view
+            student_images = apply_student_view_perturbation(images)
+            s_embeds = student_model(student_images, text_embeds, return_embeddings=True)
             with torch.no_grad():
                 t_embeds = teacher_model(images, text_embeds, return_embeddings=True)
 
-            loss, l_obj, l_con = compute_spoco_total_loss(
+            loss, l_obj, l_con, l_push = compute_spoco_total_loss(
                 student_embeds=s_embeds,
                 teacher_embeds=t_embeds,
                 targets=targets,
+                delta_var=args.delta_var,
+                delta_dist=args.delta_dist,
+                pmaps_threshold=args.kernel_threshold,
                 sigma=args.sigma,
                 w_con=args.w_con,
+                w_unl_push=args.w_unl_push,
+                num_unlabeled_anchors=args.max_unlabeled_anchors,
+                volume_threshold=args.volume_threshold,
                 negative_supervision=True,
+                return_details=True,
             )
 
         success = ddp_step(
@@ -351,7 +420,10 @@ def main() -> None:
         update_ema_variables(student_model, teacher_model, alpha=args.alpha)
 
         if rank == 0:
-            logger.info(f"Dry Run Result: Success={success} | Total Loss: {loss.item():.4f} (L_obj: {l_obj.item():.4f}, L_con: {l_con.item():.4f})")
+            logger.info(
+                f"Dry Run Result: Success={success} | Total Loss: {loss.item():.4f} "
+                f"(L_obj: {l_obj.item():.4f}, L_con: {l_con.item():.4f}, L_push: {l_push.item():.4f})"
+            )
             logger.info(f"Student Metric Embeddings Shape: {tuple(s_embeds.shape)}")
         cleanup_distributed()
         return
@@ -368,6 +440,7 @@ def main() -> None:
         epoch_loss_sum = 0.0
         epoch_obj_sum = 0.0
         epoch_con_sum = 0.0
+        epoch_push_sum = 0.0
         step_count = 0
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}", disable=(rank != 0))
@@ -380,17 +453,25 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
 
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                s_embeds = student_model(images, text_embeds, return_embeddings=True)
+                student_images = apply_student_view_perturbation(images)
+                s_embeds = student_model(student_images, text_embeds, return_embeddings=True)
                 with torch.no_grad():
                     t_embeds = teacher_model(images, text_embeds, return_embeddings=True)
 
-                loss, l_obj, l_con = compute_spoco_total_loss(
+                loss, l_obj, l_con, l_push = compute_spoco_total_loss(
                     student_embeds=s_embeds,
                     teacher_embeds=t_embeds,
                     targets=targets,
+                    delta_var=args.delta_var,
+                    delta_dist=args.delta_dist,
+                    pmaps_threshold=args.kernel_threshold,
                     sigma=args.sigma,
                     w_con=args.w_con,
+                    w_unl_push=args.w_unl_push,
+                    num_unlabeled_anchors=args.max_unlabeled_anchors,
+                    volume_threshold=args.volume_threshold,
                     negative_supervision=True,
+                    return_details=True,
                 )
 
             step_ok = ddp_step(
@@ -409,6 +490,7 @@ def main() -> None:
                 epoch_loss_sum += loss.item()
                 epoch_obj_sum += l_obj.item()
                 epoch_con_sum += l_con.item()
+                epoch_push_sum += l_push.item()
                 step_count += 1
                 total_steps += 1
 
@@ -417,25 +499,33 @@ def main() -> None:
                         "loss": f"{loss.item():.4f}",
                         "l_obj": f"{l_obj.item():.4f}",
                         "l_con": f"{l_con.item():.4f}",
+                        "l_push": f"{l_push.item():.4f}",
                     })
 
         avg_epoch_loss = epoch_loss_sum / max(1, step_count)
         avg_obj_loss = epoch_obj_sum / max(1, step_count)
         avg_con_loss = epoch_con_sum / max(1, step_count)
+        avg_push_loss = epoch_push_sum / max(1, step_count)
 
         # Validation Evaluation
         val_loss = evaluate_val_loss(
             model=student_model,
             val_loader=val_loader,
             device=device_str,
+            delta_var=args.delta_var,
+            delta_dist=args.delta_dist,
+            pmaps_threshold=args.kernel_threshold,
             sigma=args.sigma,
             w_con=args.w_con,
+            w_unl_push=args.w_unl_push,
+            num_unlabeled_anchors=args.max_unlabeled_anchors,
+            volume_threshold=args.volume_threshold,
         )
 
         if rank == 0:
             logger.info(
                 f"Epoch {epoch:03d}/{args.epochs:03d} | "
-                f"Train Loss: {avg_epoch_loss:.4f} (Obj: {avg_obj_loss:.4f}, Con: {avg_con_loss:.4f}) | "
+                f"Train Loss: {avg_epoch_loss:.4f} (Obj: {avg_obj_loss:.4f}, Con: {avg_con_loss:.4f}, Push: {avg_push_loss:.4f}) | "
                 f"Val Loss: {val_loss:.4f}"
             )
 
@@ -447,6 +537,7 @@ def main() -> None:
                         "train/total_loss": avg_epoch_loss,
                         "train/obj_loss": avg_obj_loss,
                         "train/con_loss": avg_con_loss,
+                        "train/push_loss": avg_push_loss,
                         "val/loss": val_loss,
                     })
                 except Exception:
@@ -492,3 +583,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

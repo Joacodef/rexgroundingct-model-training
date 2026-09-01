@@ -65,7 +65,7 @@
 ### Phase 4: Alternative Architectures & Unbiased Models
 * **Core Research Scope**:
   * **Clean-Slate Architecture Exploration**: Evaluate alternative 3D vision-language grounding models not pre-trained on ReXGroundingCT data.
-  * **True SPOCO Evaluation**: Test metric-learning pixel embedding segmentation with anchor soft masks and clustering (Wolny et al., CVPR 2022) on compatible clean-slate architectures.
+  * **SPOCO Metric Learning Evaluation**: Test metric-learning pixel embedding segmentation with anchor soft masks and clustering (Wolny et al., CVPR 2022) on compatible clean-slate architectures.
   * **Comparative Cross-Architecture Benchmark**: Systematic benchmark comparing VoxTell against clean-slate 3D grounding backbones to isolate pre-training bias vs. architectural strength.
 
 * **Key Deliverables**:

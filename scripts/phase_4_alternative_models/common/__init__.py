@@ -3,7 +3,7 @@
 PACKAGE:        Phase 4 Alternative & SPOCO Models Common Infrastructure
 LOCATION:       scripts/phase_4_alternative_models/common/__init__.py
 OBJECTIVE:      Export reusable components for Phase 4 alternative 3D vision-language
-                models and True SPOCO metric architectures.
+                models and SPOCO metric architectures.
 ===============================================================================
 """
 
@@ -17,6 +17,7 @@ from scripts.phase_4_alternative_models.common.losses import (
     sample_annotated_anchors,
     sample_unannotated_anchors,
     compute_instance_dice_loss,
+    compute_unlabeled_push_loss,
     compute_spoco_total_loss,
 )
 from scripts.phase_4_alternative_models.common.clustering import (
@@ -31,6 +32,7 @@ __all__ = [
     "sample_annotated_anchors",
     "sample_unannotated_anchors",
     "compute_instance_dice_loss",
+    "compute_unlabeled_push_loss",
     "compute_spoco_total_loss",
     "extract_instances_from_embeddings",
 ]

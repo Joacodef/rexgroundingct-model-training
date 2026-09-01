@@ -143,7 +143,7 @@ class VoxTellSpocoModel(VoxTellModel):
         VoxTellSpocoModel(input_channels=1, embedding_dim=16, ...)
 
     Objective:
-        VoxTell foundation model adapted for True SPOCO metric learning.
+        VoxTell foundation model adapted for SPOCO metric learning.
         Conditioned on 2560-dim Qwen text embeddings, the model maps each 3D voxel
         (z, y, x) into a continuous D-dimensional unit hypersphere vector.
 

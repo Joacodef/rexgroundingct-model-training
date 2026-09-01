@@ -305,10 +305,12 @@ def main():
         del img_ras, ras_nii, probs_nnunet_crop, probs_nnunet_full, probs_ras
         gc.collect()
 
-    # Synchronize all ranks at completion
+    # Clean up distributed process group
     if is_distributed and dist.is_available() and dist.is_initialized():
-        dist.barrier()
-        cleanup_distributed()
+        try:
+            cleanup_distributed()
+        except Exception:
+            pass
 
     if rank == 0:
         if missing_files_count > 0:

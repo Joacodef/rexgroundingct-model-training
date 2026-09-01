@@ -179,7 +179,7 @@ def evaluate_val_loss(
                 break
             images = batch["image"].to(device, non_blocking=True)
             targets = batch["seg"].to(device, non_blocking=True)
-            text_embeds = batch["text_embedding"].to(device, non_blocking=True)
+            text_embeds = (batch.get("text_embeddings") if "text_embeddings" in batch else batch["text_embedding"]).to(device, non_blocking=True)
 
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 s_embeds = model(images, text_embeds, return_embeddings=True)
@@ -226,7 +226,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--w_unl_push", type=float, default=0.1, help="Unlabeled background push loss weight (default: 0.1)")
     parser.add_argument("--max_unlabeled_anchors", type=int, default=8, help="Max unannotated anchors per volume (default: 8)")
     parser.add_argument("--volume_threshold", type=float, default=0.05, help="Stopping fraction for uncovered background (default: 0.05)")
-    parser.add_argument("--embedding_dim", type=int, default=16, help="Metric embedding dimension D (default: 16)")
+    parser.add_argument("--embedding_dim", type=int, default=32, help="Metric embedding dimension D (default: 32)")
     parser.add_argument("--dataset_json", type=str, default=str(DATASET_JSON), help="Path to dataset.json")
     parser.add_argument("--output_dir", type=str, default=str(EXP_LOG_DIR), help="Output directory for checkpoints and logs")
     parser.add_argument("--use_volume_cache", action="store_true", default=True, help="Enable fast SSD volume caching in /tmp")
@@ -382,7 +382,7 @@ def main() -> None:
         batch = next(iter(train_loader))
         images = batch["image"].to(device, non_blocking=True)
         targets = batch["seg"].to(device, non_blocking=True)
-        text_embeds = batch["text_embedding"].to(device, non_blocking=True)
+        text_embeds = (batch.get("text_embeddings") if "text_embeddings" in batch else batch["text_embedding"]).to(device, non_blocking=True)
 
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             # Dual view perturbation: student receives perturbed view, teacher receives unperturbed view
@@ -447,7 +447,7 @@ def main() -> None:
         for batch in pbar:
             images = batch["image"].to(device, non_blocking=True)
             targets = batch["seg"].to(device, non_blocking=True)
-            text_embeds = batch["text_embedding"].to(device, non_blocking=True)
+            text_embeds = (batch.get("text_embeddings") if "text_embeddings" in batch else batch["text_embedding"]).to(device, non_blocking=True)
             scan_id = batch["scan_id"][0] if "scan_id" in batch else f"step_{total_steps}"
 
             optimizer.zero_grad(set_to_none=True)

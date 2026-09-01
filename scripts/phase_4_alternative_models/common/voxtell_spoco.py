@@ -66,15 +66,6 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
         )
         self.embedding_dim = embedding_dim
 
-        # Final stage output channels in VoxTell are 32
-        final_stage_channels = encoder.output_channels[0]  # 32
-        self.embedding_head = nn.Sequential(
-            nn.Conv3d(final_stage_channels, final_stage_channels, kernel_size=3, padding=1, bias=False),
-            nn.InstanceNorm3d(final_stage_channels),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv3d(final_stage_channels, embedding_dim, kernel_size=1, bias=True),
-        )
-
     def forward(
         self,
         skips: List[torch.Tensor],
@@ -86,8 +77,8 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
             forward(skips: list[torch.Tensor], mask_embeddings: list[torch.Tensor], return_embeddings: bool = True) -> torch.Tensor | list[torch.Tensor]
 
         Objective:
-            Forward pass through decoder upsampling feature skips and projecting
-            the highest-resolution feature map to metric embedding space.
+            Forward pass through decoder upsampling feature skips and directly
+            normalizing the native 32D full-resolution feature volume to metric embedding space.
 
         Inputs:
             skips (list[torch.Tensor]): Encoder skip connections (bottleneck last).
@@ -95,7 +86,7 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
             return_embeddings (bool): Whether to return continuous metric embeddings (default True).
 
         Outputs:
-            torch.Tensor: Continuous embeddings of shape (B, D, H, W, D) or standard logits.
+            torch.Tensor: Continuous normalized 32D embeddings of shape (B, 32, H, W, D) or standard logits.
         """
         lres_input = skips[-1]
         seg_outputs = []
@@ -109,9 +100,8 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
             if stage_idx == (len(self.stages) - 1):
                 # Final full-resolution stage (shape: B, 32, H, W, D)
                 if return_embeddings:
-                    embed = self.embedding_head(x)
-                    # L2 normalize onto unit hypersphere S^(D-1)
-                    embed = F.normalize(embed, p=2, dim=1)
+                    # Direct L2 normalization of native 32D pretrained feature volume onto unit hypersphere S^31
+                    embed = F.normalize(x, p=2, dim=1)
                     seg_outputs.append(embed)
                 else:
                     seg_pred = torch.einsum("b c h w d, b n c -> b n h w d", x, mask_embeddings_rev[-1])
@@ -255,21 +245,21 @@ class VoxTellSpocoModel(VoxTellModel):
 def load_voxtell_spoco_model(
     model_dir: str,
     device: str,
-    embedding_dim: int = 16,
+    embedding_dim: int = 32,
     deep_supervision: bool = False,
 ) -> VoxTellSpocoModel:
     """
     Signature:
-        load_voxtell_spoco_model(model_dir: str, device: str, embedding_dim: int = 16, deep_supervision: bool = False) -> VoxTellSpocoModel
+        load_voxtell_spoco_model(model_dir: str, device: str, embedding_dim: int = 32, deep_supervision: bool = False) -> VoxTellSpocoModel
 
     Objective:
         Load plans.json configuration, instantiate VoxTellSpocoModel, and load
-        pre-trained foundation checkpoint weights for transfer learning into SPOCO.
+        pre-trained foundation checkpoint weights for native 32D SPOCO metric learning.
 
     Inputs:
         model_dir (str): Directory containing plans.json and checkpoint_final.pth.
         device (str): Computation device string (e.g. 'cuda:1').
-        embedding_dim (int): Metric embedding dimension D (default 16).
+        embedding_dim (int): Metric embedding dimension D (default 32).
         deep_supervision (bool): Whether to enable deep supervision (default False).
 
     Outputs:
@@ -312,13 +302,9 @@ def load_voxtell_spoco_model(
         checkpoint_data = torch.load(ckpt_path, map_location=device, weights_only=False)
         state_dict = checkpoint_data.get("network_weights", checkpoint_data.get("model", checkpoint_data))
 
-        # Filter out incompatible final output layer keys (embedding_head is newly initialized)
-        filtered_state_dict = {
-            k: v for k, v in state_dict.items()
-            if not k.startswith("decoder.seg_layers.4")
-        }
-        missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
-        logger.info(f"Successfully loaded backbone weights (missing: {len(missing)}, unexpected: {len(unexpected)})")
+        # 100% full weight loading (zero uninitialized projection layers)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        logger.info(f"Successfully loaded 100% pre-trained weights (missing: {len(missing)}, unexpected: {len(unexpected)})")
     else:
         logger.warning(f"Pre-trained checkpoint not found at {ckpt_path}. Initializing with random weights.")
 

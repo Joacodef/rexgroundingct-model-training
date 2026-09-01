@@ -64,9 +64,11 @@
 
 ### Phase 4: Alternative Architectures & Unbiased Models
 * **Core Research Scope**:
-  * **Clean-Slate Architecture Exploration**: Evaluate alternative 3D vision-language grounding models not pre-trained on ReXGroundingCT data.
-  * **SPOCO Metric Learning Evaluation**: Test metric-learning pixel embedding segmentation with anchor soft masks and clustering (Wolny et al., CVPR 2022) on compatible clean-slate architectures.
-  * **Comparative Cross-Architecture Benchmark**: Systematic benchmark comparing VoxTell against clean-slate 3D grounding backbones to isolate pre-training bias vs. architectural strength.
+  * **Clean-Slate & Metric-Learning Exploration**: Evaluate 3D vision-language grounding models adapted for metric learning via Sparse Object-level Consistency (SPOCO, Wolny et al., CVPR 2022) across three targeted experimental hypotheses:
+    * **Exp 001: Canonical SPOCO Foundation Baseline**: Unit-hypersphere metric embeddings with single-anchor connected-component supervision ($L_{\text{obj}}$), unannotated coverage suppression consistency ($L_{\text{con}}$), and background push repulsion ($L_{\text{unl\_push}}$).
+    * **Exp 002: Multi-Anchor Volumetric Scaling for Conglomerate & Diffuse Pathologies (Hypothesis H1)**: Testing multi-anchor sampling scaled by component volume (or distance transform/medial axis) to eliminate variance strain on large non-focal entities (e.g., lobar consolidation, massive effusions, diffuse emphysema).
+    * **Exp 003: Morphology-Adaptive Margin & Kernel Calibration (Hypothesis H2)**: Testing category-adaptive variance margins $\delta_{\text{var}}(c)$ and kernel thresholds calibrated to anatomical sphericity ($S$) and spatial extent (tight clusters for compact nodules vs. flexible envelopes for sheet-like infiltrates).
+  * **Comparative Cross-Architecture Benchmark**: Systematic benchmark comparing VoxTell against alternative 3D grounding backbones to isolate pre-training bias vs. architectural strength.
 
 * **Key Deliverables**:
   1. *Alternative Model Suite & Benchmarks*: Validated trainers and benchmark reports across alternative 3D grounding backbones.

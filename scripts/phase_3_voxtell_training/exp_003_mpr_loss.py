@@ -501,12 +501,16 @@ def main() -> None:
         # Initialize Weights & Biases on Rank 0
         if rank == 0 and args.wandb:
             import wandb
-            wandb.init(
-                project=args.wandb_project,
-                name=args.wandb_run_name,
-                config=vars(args)
-            )
-            logger.info(f"Initialized Weights & Biases logging (Project: {args.wandb_project}, Run: {args.wandb_run_name})")
+            try:
+                wandb.init(
+                    project=args.wandb_project,
+                    name=args.wandb_run_name,
+                    config=vars(args)
+                )
+                logger.info(f"Initialized Weights & Biases logging (Project: {args.wandb_project}, Run: {args.wandb_run_name})")
+            except Exception as e:
+                logger.warning(f"Could not initialize Weights & Biases ({e}). Proceeding without wandb logging.")
+                args.wandb = False
 
         global_step = 0
         for epoch in range(start_epoch, args.epochs + 1):

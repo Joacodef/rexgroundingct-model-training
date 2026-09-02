@@ -523,20 +523,32 @@ def main() -> None:
         avg_con_loss = epoch_con_sum / max(1, step_count)
         avg_push_loss = epoch_push_sum / max(1, step_count)
 
-        # Validation Evaluation
-        val_loss = evaluate_val_loss(
-            model=student_model,
-            val_loader=val_loader,
-            device=device_str,
-            delta_var=args.delta_var,
-            delta_dist=args.delta_dist,
-            pmaps_threshold=args.kernel_threshold,
-            sigma=args.sigma,
-            w_con=args.w_con,
-            w_unl_push=args.w_unl_push,
-            num_unlabeled_anchors=args.max_unlabeled_anchors,
-            volume_threshold=args.volume_threshold,
-        )
+        # Validation Evaluation. Wrapped defensively: an unexpected evaluation-time failure (a
+        # malformed val scan, a transient OOM, etc.) must never discard a completed training epoch,
+        # since this is typically run as an unattended multi-epoch SLURM batch job and this call
+        # happens before any checkpoint for the epoch is written. On failure, val_loss is recorded as
+        # +inf so it can never be mistaken for a new best checkpoint, training continues, and
+        # latest_model.pt is still saved below so no progress or queue slot is lost.
+        try:
+            val_loss = evaluate_val_loss(
+                model=student_model,
+                val_loader=val_loader,
+                device=device_str,
+                delta_var=args.delta_var,
+                delta_dist=args.delta_dist,
+                pmaps_threshold=args.kernel_threshold,
+                sigma=args.sigma,
+                w_con=args.w_con,
+                w_unl_push=args.w_unl_push,
+                num_unlabeled_anchors=args.max_unlabeled_anchors,
+                volume_threshold=args.volume_threshold,
+            )
+        except Exception as e:
+            if rank == 0:
+                logger.warning(f"Epoch {epoch:03d}: validation evaluation failed ({e}). Recording val_loss=inf and continuing.")
+            val_loss = float("inf")
+            unwrapped_for_mode = student_model.module if hasattr(student_model, "module") else student_model
+            unwrapped_for_mode.train()
 
         if rank == 0:
             logger.info(

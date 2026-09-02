@@ -148,7 +148,25 @@ class ReXDataset(Dataset):
                 mt.EnsureTyped(keys=['image', 'seg'], dtype=torch.float32)
             ])
         else:
+            # Validation/eval patches must also be fixed-size. Passing the raw crop_to_nonzero()
+            # volume through unmodified (its native shape, e.g. 412x408x411) is not guaranteed to be
+            # divisible by 2^5: the VoxTell ResidualEncoder's 5 downsampling stages then misalign the
+            # encoder/decoder skip connections (e.g. floor(411/2^5)=12 vs an adjacent stage's 13),
+            # raising a tensor size mismatch on the residual add. Mirror the train-time foreground
+            # oversampling crop (SpatialPadd + RandCropByPosNegLabeld) so shapes are always
+            # [patch_size]^3, omitting only the flip augmentations. This makes each item's evaluated
+            # patch a fixed size but not deterministic in location across calls/epochs, since
+            # RandCropByPosNegLabeld samples a random pos/neg crop position each time it runs.
             self.transforms = mt.Compose([
+                mt.SpatialPadd(keys=['image', 'seg'], spatial_size=[patch_size, patch_size, patch_size], mode='constant'),
+                mt.RandCropByPosNegLabeld(
+                    keys=['image', 'seg'],
+                    label_key='seg',
+                    spatial_size=[patch_size, patch_size, patch_size],
+                    pos=self.pos_ratio,
+                    neg=1.0 - self.pos_ratio,
+                    num_samples=1
+                ),
                 mt.EnsureTyped(keys=['image', 'seg'], dtype=torch.float32)
             ])
 
@@ -308,15 +326,12 @@ class ReXDataset(Dataset):
             'seg': seg_cropped
         }
         
-        if self.is_train:
-            transformed = self.transforms(data_dict)
-            transformed = transformed[0]
-            image_tensor = torch.as_tensor(transformed['image'])
-            seg_tensor = torch.as_tensor(transformed['seg'])
-        else:
-            transformed = self.transforms(data_dict)
-            image_tensor = torch.as_tensor(transformed['image'])
-            seg_tensor = torch.as_tensor(transformed['seg'])
+        # Both branches now run a RandCropByPosNegLabeld(num_samples=1) pipeline, which always
+        # returns a single-element list rather than a bare transformed dict.
+        transformed = self.transforms(data_dict)
+        transformed = transformed[0]
+        image_tensor = torch.as_tensor(transformed['image'])
+        seg_tensor = torch.as_tensor(transformed['seg'])
             
         return {
             'image': image_tensor,

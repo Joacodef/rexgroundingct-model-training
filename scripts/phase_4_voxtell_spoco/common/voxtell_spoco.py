@@ -2,9 +2,13 @@
 ===============================================================================
 MODULE:         VoxTell-SPOCO Model Architecture & Factory
 LOCATION:       scripts/phase_4_voxtell_spoco/common/voxtell_spoco.py
-OBJECTIVE:      Define VoxTellSpocoModel and VoxTellSpocoDecoder adapting pre-trained
-                VoxTell foundation backbone with a metric embedding projection head
-                producing dense continuous unit-hypersphere voxel vectors for SPOCO.
+OBJECTIVE:      Define VoxTellSpocoModel and VoxTellSpocoDecoder adapting the pre-trained
+                VoxTell foundation backbone for SPOCO metric learning. The metric
+                embedding is the native full-resolution 32-channel decoder feature
+                volume, L2-normalized onto the unit hypersphere S^31 (no added
+                projection head). The decoder can additionally emit VoxTell's native
+                text-query logit map in the same forward pass, used at inference as a
+                text-conditioned seed / proposal map.
 ===============================================================================
 """
 
@@ -29,8 +33,10 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
         VoxTellSpocoDecoder(encoder, num_classes, n_conv_per_stage, deep_supervision, num_maskformer_stages=5, embedding_dim=32, ...)
 
     Objective:
-        Subclass of VoxTellDecoder replacing the scalar einsum dot-product output
-        with a 3D metric embedding head producing L2-normalized voxel vectors.
+        Subclass of VoxTellDecoder that, at the final full-resolution stage, exposes
+        the native 32-channel decoder feature volume as an L2-normalized metric
+        embedding (unit hypersphere S^31) and, optionally, VoxTell's native scalar
+        text-query logit for that same feature volume.
 
     Inputs:
         encoder: Backbone encoder (ResidualEncoder).
@@ -38,10 +44,13 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
         n_conv_per_stage: Number of convolution blocks per decoder stage.
         deep_supervision (bool): Whether to output multi-scale predictions.
         num_maskformer_stages (int): Number of stages to fuse mask embeddings (default 5).
-        embedding_dim (int): Dimensionality of metric embedding space D (default 32).
+        embedding_dim (int): Metric embedding dimensionality. Fixed at 32 (the native
+            decoder feature width); any other value raises ValueError.
 
     Outputs:
-        torch.Tensor: Normalized 3D metric embeddings of shape (B, D, H, W, D).
+        torch.Tensor | tuple[torch.Tensor, torch.Tensor]: Normalized 3D metric
+        embeddings of shape (B, 32, H, W, D), or (embeddings, logits) when both are
+        requested.
     """
 
     def __init__(
@@ -54,7 +63,7 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
         embedding_dim: int = 32,
         **kwargs: Any,
     ) -> None:
-        """Initialize VoxTellSpocoDecoder with metric embedding projection head."""
+        """Initialize VoxTellSpocoDecoder. embedding_dim is fixed at 32 (native decoder width)."""
         super().__init__(
             encoder=encoder,
             num_classes=num_classes,
@@ -63,6 +72,11 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
             num_maskformer_stages=num_maskformer_stages,
             **kwargs,
         )
+        if embedding_dim != 32:
+            raise ValueError(
+                f"VoxTell-SPOCO metric embeddings are the native 32-channel decoder "
+                f"feature volume; embedding_dim must be 32, got {embedding_dim}."
+            )
         self.embedding_dim = embedding_dim
 
     def forward(
@@ -70,22 +84,29 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
         skips: List[torch.Tensor],
         mask_embeddings: List[torch.Tensor],
         return_embeddings: bool = True,
-    ) -> Union[torch.Tensor, List[torch.Tensor]]:
+        return_logits: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor], List[torch.Tensor]]:
         """
         Signature:
-            forward(skips: list[torch.Tensor], mask_embeddings: list[torch.Tensor], return_embeddings: bool = True) -> torch.Tensor | list[torch.Tensor]
+            forward(skips: list[torch.Tensor], mask_embeddings: list[torch.Tensor], return_embeddings: bool = True, return_logits: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | list[torch.Tensor]
 
         Objective:
-            Forward pass through decoder upsampling feature skips and directly
-            normalizing the native 32D full-resolution feature volume to metric embedding space.
+            Forward pass through the decoder, upsampling the encoder skips and, at the
+            final full-resolution stage, L2-normalizing the native 32D feature volume
+            to metric embedding space and/or contracting it with the text-query
+            embedding to produce VoxTell's native scalar logit.
 
         Inputs:
             skips (list[torch.Tensor]): Encoder skip connections (bottleneck last).
             mask_embeddings (list[torch.Tensor]): Per-stage text query embeddings.
-            return_embeddings (bool): Whether to return continuous metric embeddings (default True).
+            return_embeddings (bool): Return the L2-normalized 32D metric embeddings (default True).
+            return_logits (bool): Also return the native text-query logit map (default False).
+                When return_embeddings is False, the logit is returned regardless (legacy path).
 
         Outputs:
-            torch.Tensor: Continuous normalized 32D embeddings of shape (B, 32, H, W, D) or standard logits.
+            torch.Tensor: Normalized 32D embeddings (B, 32, H, W, D) when only embeddings
+                are requested, or the logit (B, 1, H, W, D) on the legacy non-embeddings path.
+            tuple[torch.Tensor, torch.Tensor]: (embeddings, logits) when both are requested.
         """
         lres_input = skips[-1]
         seg_outputs = []
@@ -97,14 +118,19 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
             x = self.stages[stage_idx](x)
 
             if stage_idx == (len(self.stages) - 1):
-                # Final full-resolution stage (shape: B, 32, H, W, D)
+                # Final full-resolution stage (x shape: B, 32, H, W, D)
+                final_outputs = []
                 if return_embeddings:
-                    # Direct L2 normalization of native 32D pretrained feature volume onto unit hypersphere S^31
-                    embed = F.normalize(x, p=2, dim=1)
-                    seg_outputs.append(embed)
-                else:
-                    seg_pred = torch.einsum("b c h w d, b n c -> b n h w d", x, mask_embeddings_rev[-1])
-                    seg_outputs.append(seg_pred)
+                    # L2 normalization of the native 32D pretrained feature volume onto S^31
+                    final_outputs.append(F.normalize(x, p=2, dim=1))
+                if return_logits or not return_embeddings:
+                    # Native VoxTell scalar logit: contract the 32D feature volume with the
+                    # text-query embedding (mask_embeddings_rev is now down to the stage-0
+                    # projection). Used at inference as a text-conditioned seed / proposal map.
+                    final_outputs.append(
+                        torch.einsum("b c h w d, b n c -> b n h w d", x, mask_embeddings_rev[-1])
+                    )
+                seg_outputs.append(tuple(final_outputs) if len(final_outputs) > 1 else final_outputs[0])
             elif stage_idx >= len(self.stages) - len(mask_embeddings_rev):
                 mask_emb = mask_embeddings_rev.pop(0)
                 batch_size, _, channels = mask_emb.shape
@@ -143,7 +169,7 @@ class VoxTellSpocoModel(VoxTellModel):
         deep_supervision (bool): Whether deep supervision is enabled (default False).
 
     Outputs:
-        torch.Tensor: Dense voxel embeddings of shape (B, N_prompts, D, Z, Y, X).
+        torch.Tensor: Dense voxel embeddings of shape (B, N_prompts, 32, Z, Y, X).
     """
 
     def __init__(
@@ -153,7 +179,7 @@ class VoxTellSpocoModel(VoxTellModel):
         deep_supervision: bool = False,
         **kwargs: Any,
     ) -> None:
-        """Initialize VoxTellSpocoModel replacing standard decoder with VoxTellSpocoDecoder."""
+        """Initialize VoxTellSpocoModel replacing standard decoder with VoxTellSpocoDecoder. embedding_dim fixed at 32."""
         super().__init__(
             input_channels=input_channels,
             deep_supervision=deep_supervision,
@@ -182,22 +208,28 @@ class VoxTellSpocoModel(VoxTellModel):
         img: torch.Tensor,
         text_embedding: torch.Tensor,
         return_embeddings: bool = True,
-    ) -> torch.Tensor:
+        return_logits: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Signature:
-            forward(img: torch.Tensor, text_embedding: torch.Tensor, return_embeddings: bool = True) -> torch.Tensor
+            forward(img: torch.Tensor, text_embedding: torch.Tensor, return_embeddings: bool = True, return_logits: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]
 
         Objective:
-            Extract 3D features, fuse text query embeddings via transformer decoder,
-            and decode into full-resolution dense metric embeddings per prompt.
+            Extract 3D features, fuse text query embeddings via the transformer decoder,
+            and decode per prompt into full-resolution dense metric embeddings and/or
+            VoxTell's native text-query logit map.
 
         Inputs:
             img (torch.Tensor): 3D CT volume tensor of shape (B, 1, Z, Y, X).
             text_embedding (torch.Tensor): Text query embeddings of shape (B, N, D_text).
-            return_embeddings (bool): Whether to return metric embeddings (default True).
+            return_embeddings (bool): Return metric embeddings (default True).
+            return_logits (bool): Also return the native logit map (default False).
 
         Outputs:
-            torch.Tensor: Dense metric embeddings of shape (B, N, D, Z, Y, X) or logits (B, N, Z, Y, X).
+            torch.Tensor: Metric embeddings (B, N, 32, Z, Y, X) when only embeddings are
+                requested; logits (B, N, 1, Z, Y, X) on the legacy non-embeddings path.
+            tuple[torch.Tensor, torch.Tensor]: (embeddings (B, N, 32, Z, Y, X),
+                logits (B, N, Z, Y, X)) when both are requested.
         """
         # 1. Multi-scale feature extraction via pre-trained ResidualEncoder
         skips = self.encoder(img)
@@ -234,10 +266,20 @@ class VoxTellSpocoModel(VoxTellModel):
         num_prompts = text_embedding.shape[1]
         for prompt_idx in range(num_prompts):
             prompt_embeds = [m[:, prompt_idx : prompt_idx + 1] for m in mask_embeddings]
-            out = self.decoder(skips, prompt_embeds, return_embeddings=return_embeddings)
+            out = self.decoder(
+                skips, prompt_embeds,
+                return_embeddings=return_embeddings,
+                return_logits=return_logits,
+            )
             outs.append(out)
 
-        # Stack across prompt dimension: (B, N, D, Z, Y, X) or (B, N, Z, Y, X)
+        if return_embeddings and return_logits:
+            # Each `out` is (embed (B, 32, Z, Y, X), logit (B, 1, Z, Y, X)).
+            embeds = torch.stack([o[0] for o in outs], dim=1)              # (B, N, 32, Z, Y, X)
+            logits = torch.stack([o[1] for o in outs], dim=1).squeeze(2)  # (B, N, Z, Y, X)
+            return embeds, logits
+
+        # Single-tensor path: embeddings (B, N, 32, Z, Y, X) or logits (B, N, 1, Z, Y, X)
         return torch.stack(outs, dim=1)
 
 
@@ -258,12 +300,17 @@ def load_voxtell_spoco_model(
     Inputs:
         model_dir (str): Directory containing plans.json and checkpoint_final.pth.
         device (str): Computation device string (e.g. 'cuda:1').
-        embedding_dim (int): Metric embedding dimension D (default 32).
+        embedding_dim (int): Metric embedding dimension. Must be 32 (native decoder width).
         deep_supervision (bool): Whether to enable deep supervision (default False).
 
     Outputs:
         VoxTellSpocoModel: Initialized VoxTellSpocoModel loaded with pre-trained weights.
     """
+    if embedding_dim != 32:
+        raise ValueError(
+            f"VoxTell-SPOCO metric embeddings are the native 32-channel decoder feature "
+            f"volume; embedding_dim must be 32, got {embedding_dim}."
+        )
     model_dir_path = Path(model_dir)
     plans_file = model_dir_path / "plans.json"
 

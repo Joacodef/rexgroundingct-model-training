@@ -219,7 +219,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--w_unl_push", type=float, default=0.1, help="Unlabeled background push loss weight (default: 0.1)")
     parser.add_argument("--max_unlabeled_anchors", type=int, default=8, help="Max unannotated anchors per volume (default: 8)")
     parser.add_argument("--volume_threshold", type=float, default=0.05, help="Stopping fraction for uncovered background (default: 0.05)")
-    parser.add_argument("--embedding_dim", type=int, default=32, help="Metric embedding dimension D (default: 32)")
     parser.add_argument("--dataset_json", type=str, default=str(DATASET_JSON), help="Path to dataset.json")
     parser.add_argument("--output_dir", type=str, default=str(EXP_LOG_DIR), help="Output directory for checkpoints and logs")
     parser.add_argument("--resume", action="store_true", help="Resume training from latest_model.pt in output_dir")
@@ -260,7 +259,7 @@ def main() -> None:
         logger.info(f"Epochs: {args.epochs} | LR: {args.lr} | Alpha (EMA): {args.alpha}")
         logger.info(f"Delta Var: {args.delta_var} | Delta Dist: {args.delta_dist} | Kernel Threshold: {args.kernel_threshold}")
         logger.info(f"W_con: {args.w_con} | W_unl_push: {args.w_unl_push} | Max Anchors: {args.max_unlabeled_anchors}")
-        logger.info(f"Metric Embedding Dim: {args.embedding_dim} | Model Dir: {MODEL_DIR}")
+        logger.info(f"Metric Embedding Dim: 32 (native decoder width) | Model Dir: {MODEL_DIR}")
         logger.info("=" * 80)
 
     # Initialize WandB on Rank 0 if requested
@@ -280,14 +279,12 @@ def main() -> None:
     student_model = load_voxtell_spoco_model(
         model_dir=str(MODEL_DIR),
         device=device_str,
-        embedding_dim=args.embedding_dim,
         deep_supervision=False,
     )
 
     teacher_model = load_voxtell_spoco_model(
         model_dir=str(MODEL_DIR),
         device=device_str,
-        embedding_dim=args.embedding_dim,
         deep_supervision=False,
     )
     teacher_model.load_state_dict(student_model.state_dict())

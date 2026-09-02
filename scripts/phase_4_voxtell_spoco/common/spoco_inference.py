@@ -211,29 +211,37 @@ def infer_scan(
     return np.concatenate(emb_chunks, axis=0), np.concatenate(logit_chunks, axis=0)
 
 
-def top_k_seeds(prob: np.ndarray, k: int, min_separation: int) -> list:
+def top_k_seeds(prob: np.ndarray, k: int, min_separation: int, min_prob: float = 0.0) -> list:
     """
     Signature:
-        top_k_seeds(prob: np.ndarray, k: int, min_separation: int) -> list[tuple[int, int, int]]
+        top_k_seeds(prob: np.ndarray, k: int, min_separation: int, min_prob: float = 0.0) -> list[tuple[int, int, int]]
 
     Objective:
         Pick up to k local-maximum seed voxels from a 3D probability map with greedy
-        non-maximum suppression so seeds are not all drawn from one blob.
+        non-maximum suppression so seeds are not all drawn from one blob. Stops early
+        once the running maximum falls below min_prob: sigmoid probabilities are
+        strictly positive everywhere, so without that floor any k > 1 keeps harvesting
+        arbitrary near-zero background voxels after the true peaks are suppressed, and
+        each becomes a spurious instance.
 
     Inputs:
         prob (np.ndarray): 3D probability map (Z, Y, X).
         k (int): Maximum number of seeds.
         min_separation (int): Minimum Chebyshev voxel distance between seeds.
+        min_prob (float): Minimum probability for a voxel to qualify as a seed. Pass the
+            same confidence cutoff used to decide the finding is present (default 0.0,
+            which only rejects exactly-zero voxels and is unsafe for k > 1).
 
     Outputs:
         list[tuple[int, int, int]]: Seed (z, y, x) coordinates, highest probability first.
+        May be empty when no voxel clears min_prob.
     """
     work = prob.copy()
     seeds = []
     for _ in range(k):
         flat = int(np.argmax(work))
         coord = np.unravel_index(flat, work.shape)
-        if work[coord] <= 0:
+        if work[coord] <= 0 or work[coord] < min_prob:
             break
         seeds.append(tuple(int(c) for c in coord))
         z0 = max(0, coord[0] - min_separation); z1 = coord[0] + min_separation + 1
@@ -262,8 +270,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sigma", type=float, default=None)
     p.add_argument("--soft_mask_threshold", type=float, default=0.5)
     p.add_argument("--min_volume_voxels", type=int, default=10)
-    p.add_argument("--seeds_per_finding", type=int, default=1)
-    p.add_argument("--seed_min_separation", type=int, default=8)
+    p.add_argument("--seeds_per_finding", type=int, default=1,
+                   help="Seeds per finding; >1 recovers multi-focal findings (bilateral effusions, "
+                        "multiple nodules). Raise --seed_min_separation with it, or the extra seeds "
+                        "land inside the same lesion and only cost compute")
+    p.add_argument("--seed_min_separation", type=int, default=8,
+                   help="Minimum Chebyshev voxel distance between seeds. The default suits a single "
+                        "seed; use a lesion-scale value (~30-50) when --seeds_per_finding > 1")
     p.add_argument("--finding_chunk", type=int, default=1,
                    help="Findings sharing one sliding pass. 1 bounds RAM (~7 GB/finding); raise to trade RAM for speed")
     p.add_argument("--start_idx", type=int, default=0)
@@ -364,7 +377,17 @@ def main() -> None:
             prob = 1.0 / (1.0 + np.exp(-logit[n]))
             if float(prob.max()) < args.p_cand:
                 continue
-            seeds = top_k_seeds(prob, args.seeds_per_finding, args.seed_min_separation)
+            # Seeds must be drawn from inside the candidate mask. extract_instances_from_
+            # embeddings scores candidate voxels only, so a seed outside the mask has soft
+            # value 0, lands in no connected component, and the whole finding is silently
+            # dropped rather than merely mis-shaped.
+            prob_seed = prob if candidate_mask is None else prob * candidate_mask
+            seeds = top_k_seeds(prob_seed, args.seeds_per_finding, args.seed_min_separation,
+                                min_prob=args.p_cand)
+            if not seeds:
+                # An empty list is falsy in extract_instances_from_embeddings, which would
+                # fall through to background-seeded fallback clustering. Leave n empty.
+                continue
             pred_cropped[n] = extract_instances_from_embeddings(
                 embeddings=emb[n],
                 delta_var=args.delta_var,

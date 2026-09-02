@@ -1,8 +1,8 @@
 """
 ===============================================================================
 SCRIPT:         VoxTell-SPOCO Model Fine-Tuning (SPOCO Foundation)
-PHASE:          Phase 4 — Alternative Architectures & Unbiased Models
-LOCATION:       scripts/phase_4_alternative_models/exp_001_voxtell_spoco.py
+PHASE:          Phase 4 — VoxTell-SPOCO Metric Learning
+LOCATION:       scripts/phase_4_voxtell_spoco/exp_001_voxtell_spoco.py
 OBJECTIVE:      Fine-tune VoxTell adapted for Sparse Object-level Consistency
                 (SPOCO, Wolny et al., CVPR 2022). Maps 3D CT voxels into a continuous
                 16D metric embedding space on a unit hypersphere, regularized via
@@ -10,8 +10,8 @@ OBJECTIVE:      Fine-tune VoxTell adapted for Sparse Object-level Consistency
                 multi-instance connected-component anchoring, dual-view intensity perturbations,
                 and background repulsion to resolve instance suppression.
                 Supports server-agnostic multi-GPU (DDP) and single-GPU execution.
-USAGE:          Single-GPU: python scripts/phase_4_alternative_models/exp_001_voxtell_spoco.py
-                Multi-GPU:  torchrun --nproc_per_node=N scripts/phase_4_alternative_models/exp_001_voxtell_spoco.py
+USAGE:          Single-GPU: python scripts/phase_4_voxtell_spoco/exp_001_voxtell_spoco.py
+                Multi-GPU:  torchrun --nproc_per_node=N scripts/phase_4_voxtell_spoco/exp_001_voxtell_spoco.py
 ===============================================================================
 """
 
@@ -52,7 +52,7 @@ from scripts.config import (
 )
 
 # Phase 3 Shared Common Infrastructure (DDP, Dataset, Worker Resolution)
-from scripts.phase_3_voxtell_training.common import (
+from scripts.phase_3_voxtell_finetuning.common import (
     init_distributed,
     cleanup_distributed,
     setup_distributed_logger,
@@ -63,7 +63,7 @@ from scripts.phase_3_voxtell_training.common import (
 )
 
 # Phase 4 Common Infrastructure (VoxTell-SPOCO Model & Loss Engine)
-from scripts.phase_4_alternative_models.common import (
+from scripts.phase_4_voxtell_spoco.common import (
     VoxTellSpocoModel,
     load_voxtell_spoco_model,
     compute_spoco_total_loss,
@@ -72,7 +72,7 @@ from scripts.phase_4_alternative_models.common import (
 )
 
 # Experiment log directory pairing
-EXP_LOG_DIR = LOGS_DIR / "phase_4_alternative_models" / "exp_001_voxtell_spoco"
+EXP_LOG_DIR = LOGS_DIR / "phase_4_voxtell_spoco" / "exp_001_voxtell_spoco"
 EXP_LOG_DIR.mkdir(parents=True, exist_ok=True)
 logger = logging.getLogger("exp_001_voxtell_spoco")
 

@@ -8,7 +8,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from scripts.phase_3_voxtell_training.common import resolve_num_workers, ReXDataset
+from scripts.phase_3_voxtell_finetuning.common import resolve_num_workers, ReXDataset
 from scripts.config import DATASET_MINI_JSON, RAW_IMAGES_DIR, RAW_MASKS_DIR, TEXT_CACHE_DIR
 
 class TestServerAgnosticDataLoader(unittest.TestCase):

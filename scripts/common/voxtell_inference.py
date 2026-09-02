@@ -39,7 +39,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from voxtell.inference.predictor import VoxTellPredictor
 from scripts.common.orientation import load_nifti_ras, save_nifti
-from scripts.phase_3_voxtell_training.common.distributed import init_distributed, cleanup_distributed
+from scripts.phase_3_voxtell_finetuning.common.distributed import init_distributed, cleanup_distributed
 from scripts.config import TEXT_CACHE_DIR
 from acvl_utils.cropping_and_padding.padding import pad_nd_image
 
@@ -77,7 +77,7 @@ def main():
     # Inject paths from .env file or fallback config
     download_dir = os.environ.get("MODEL_DIR", "models/voxtell")
     img_raw_dir = os.environ.get("IMG_RAW_DIR", "../data/raw/images")
-    output_dir = args.output_dir or os.environ.get("TMP_PRED_DIR") or os.path.join(os.environ.get("DATA_PRED_DIR", "../data/predictions"), "phase_2b_voxtell")
+    output_dir = args.output_dir or os.environ.get("TMP_PRED_DIR") or os.path.join(os.environ.get("DATA_PRED_DIR", "../data/predictions"), "phase_2b_voxtell_baseline")
     dataset_json = args.dataset_json or os.environ.get("DATASET_JSON", "../data/dataset.json")
 
     # Security validation for critical environment variables

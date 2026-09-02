@@ -21,8 +21,8 @@ import pytest
 import torch
 import numpy as np
 
-from scripts.phase_4_alternative_models.common.voxtell_spoco import VoxTellSpocoModel
-from scripts.phase_4_alternative_models.common.losses import (
+from scripts.phase_4_voxtell_spoco.common.voxtell_spoco import VoxTellSpocoModel
+from scripts.phase_4_voxtell_spoco.common.losses import (
     compute_gaussian_soft_mask,
     sample_annotated_anchors,
     sample_unannotated_anchors,
@@ -30,8 +30,8 @@ from scripts.phase_4_alternative_models.common.losses import (
     compute_unlabeled_push_loss,
     compute_spoco_total_loss,
 )
-from scripts.phase_4_alternative_models.common.clustering import extract_instances_from_embeddings
-from scripts.phase_4_alternative_models.exp_001_voxtell_spoco import apply_student_view_perturbation
+from scripts.phase_4_voxtell_spoco.common.clustering import extract_instances_from_embeddings
+from scripts.phase_4_voxtell_spoco.exp_001_voxtell_spoco import apply_student_view_perturbation
 
 
 def test_gaussian_soft_mask_mathematical_calibration():

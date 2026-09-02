@@ -25,7 +25,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from scripts.phase_3_voxtell_training.exp_003_mpr_loss import (
+from scripts.phase_3_voxtell_finetuning.exp_003_mpr_loss import (
     compute_mpr_consistency_loss,
     compute_roi_mask,
 )

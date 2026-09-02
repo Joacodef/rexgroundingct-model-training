@@ -1,7 +1,7 @@
 """
 ===============================================================================
 MODULE:         3D SPOCO Loss Functions & Anchor Sampling
-LOCATION:       scripts/phase_4_alternative_models/common/losses.py
+LOCATION:       scripts/phase_4_voxtell_spoco/common/losses.py
 OBJECTIVE:      Implement mathematically calibrated Gaussian soft masks,
                 connected-component multi-instance supervision on annotated lesions (L_obj),
                 iterative coverage-suppression consistency on unannotated anchors (L_con),

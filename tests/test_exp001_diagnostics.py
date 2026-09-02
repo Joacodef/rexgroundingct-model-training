@@ -30,7 +30,7 @@ from scripts.config import (
     DATASET_JSON, DATASET_MINI_JSON, RAW_IMAGES_DIR, RAW_MASKS_DIR, 
     TEXT_CACHE_DIR, TMP_PREP_DIR, LOGS_DIR, MODEL_DIR
 )
-from scripts.phase_3_voxtell_training.exp_001_naive_finetuning import (
+from scripts.phase_3_voxtell_finetuning.exp_001_naive_finetuning import (
     ReXDataset, load_voxtell_model
 )
 

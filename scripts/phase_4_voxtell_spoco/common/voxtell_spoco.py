@@ -1,7 +1,7 @@
 """
 ===============================================================================
 MODULE:         VoxTell-SPOCO Model Architecture & Factory
-LOCATION:       scripts/phase_4_alternative_models/common/voxtell_spoco.py
+LOCATION:       scripts/phase_4_voxtell_spoco/common/voxtell_spoco.py
 OBJECTIVE:      Define VoxTellSpocoModel and VoxTellSpocoDecoder adapting pre-trained
                 VoxTell foundation backbone with a metric embedding projection head
                 producing dense continuous unit-hypersphere voxel vectors for SPOCO.

@@ -17,15 +17,17 @@ rexgroundingct-model-training/
 │   └── shared/                 # Server-agnostic master plan and paper digests
 ├── logs/                       # Baseline audit & training execution logs
 │   ├── phase_2a_rule_based/    # Phase 2A non-neural baseline evaluation logs
-│   ├── phase_2b_voxtell/       # Phase 2B VoxTell zero-shot baseline audit logs
-│   └── phase_3_training/       # Phase 3 Mean Teacher fine-tuning logs
+│   ├── phase_2b_voxtell_baseline/ # Phase 2B VoxTell zero-shot baseline audit logs
+│   ├── phase_3_voxtell_finetuning/ # Phase 3 VoxTell fine-tuning logs
+│   └── phase_4_voxtell_spoco/  # Phase 4 VoxTell-SPOCO metric learning logs
 ├── scratch/                    # Fine-tuning scratch scripts & temporary evaluation tools
 ├── scripts/                    # Core inference, training, & dataloading pipeline
 │   ├── analysis/               # Post-hoc diagnostic profilers & CT visualizers
 │   ├── common/                 # Spatial orientation engine, volume preprocessor, & metric evaluator
 │   ├── phase_2a_rule_based/    # Phase 2A non-neural statistical baseline pipeline
-│   ├── phase_2b_voxtell/       # Phase 2B VoxTell zero-shot baseline audit pipeline
-│   └── phase_3_training/       # Phase 3 PyTorch semi-supervised fine-tuning pipeline
+│   ├── phase_2b_voxtell_baseline/ # Phase 2B VoxTell zero-shot baseline audit pipeline
+│   ├── phase_3_voxtell_finetuning/ # Phase 3 VoxTell fine-tuning pipeline
+│   └── phase_4_voxtell_spoco/  # Phase 4 VoxTell-SPOCO metric learning pipeline
 ├── tests/                      # Automated test suite for spatial engine and utilities
 ├── .env.example                # Environment variable configuration template
 └── README.md                   # Primary repository documentation
@@ -87,7 +89,7 @@ python -m unittest discover -s tests -p "test_*.py"
 #### Phase 2B: Zero-Shot VoxTell Baseline Inference
 Run sliding window inference on validation scans with canonical RAS spatial alignment (`scripts/common/orientation.py`):
 ```bash
-python scripts/phase_2b_voxtell/exp_001_voxtell_inference.py
+python scripts/phase_2b_voxtell_baseline/exp_001_voxtell_inference.py
 ```
 
 #### Diagnostic Quantitative Statistical Profiler
@@ -115,7 +117,7 @@ python scripts/common/evaluate.py --gt_dir ../data/raw/segmentations --img_dir .
 ### 4. VoxTell Fine-Tuning & Hypotheses (Phase 3)
 Run fine-tuning inside a persistent detached `tmux` session:
 ```bash
-tmux new-session -d -s rex_phase3 "CUDA_VISIBLE_DEVICES=0 .venv/bin/python -u scripts/phase_3_voxtell_training/exp_002_pu_mean_teacher.py --epochs 50 --batch_size 1 --lr 1e-4 --device cuda:0 --wandb 2>&1 | tee logs/phase_3_voxtell_training/exp_002_pu_mean_teacher/run.log"
+tmux new-session -d -s rex_phase3 "CUDA_VISIBLE_DEVICES=0 .venv/bin/python -u scripts/phase_3_voxtell_finetuning/exp_002_pu_mean_teacher.py --epochs 50 --batch_size 1 --lr 1e-4 --device cuda:0 --wandb 2>&1 | tee logs/phase_3_voxtell_finetuning/exp_002_pu_mean_teacher/run.log"
 ```
 
 To monitor progress:
@@ -124,7 +126,7 @@ To monitor progress:
 tmux attach -t rex_phase3
 
 # Or inspect the log file directly:
-tail -f logs/phase_3_voxtell_training/exp_002_pu_mean_teacher/run.log
+tail -f logs/phase_3_voxtell_finetuning/exp_002_pu_mean_teacher/run.log
 ```
 
 ---

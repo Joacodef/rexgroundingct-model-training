@@ -2,7 +2,7 @@
 ===============================================================================
 SCRIPT:         VoxTell Supervised Fine-Tuning Baseline (Official Protocol Aligned)
 PHASE:          Phase 3 — Model Fine-Tuning & Adaptation
-LOCATION:       scripts/phase_3_voxtell_training/exp_001_naive_finetuning.py
+LOCATION:       scripts/phase_3_voxtell_finetuning/exp_001_naive_finetuning.py
 OBJECTIVE:      Supervised fine-tuning of VoxTell baseline (voxtell_v1.1) 
                 aligned with the official publication training protocol:
                 - Multi-scale deep supervision across 5 decoder stages (weights [1, 1/2, 1/4, 1/8, 1/16])
@@ -11,8 +11,8 @@ OBJECTIVE:      Supervised fine-tuning of VoxTell baseline (voxtell_v1.1)
                 - Anatomical laterality preserved (Left-Right mirroring disabled)
                 - SGD with Nesterov momentum (0.99) and polynomial learning rate schedule
                 - Multi-GPU DDP synchronized gradient finiteness guards (ddp_step)
-USAGE:          Single-GPU: python scripts/phase_3_voxtell_training/exp_001_naive_finetuning.py
-                Multi-GPU:  torchrun --nproc_per_node=N scripts/phase_3_voxtell_training/exp_001_naive_finetuning.py
+USAGE:          Single-GPU: python scripts/phase_3_voxtell_finetuning/exp_001_naive_finetuning.py
+                Multi-GPU:  torchrun --nproc_per_node=N scripts/phase_3_voxtell_finetuning/exp_001_naive_finetuning.py
 ===============================================================================
 """
 
@@ -49,7 +49,7 @@ from scripts.config import (
 )
 
 # Import Phase 3 Shared Common Infrastructure
-from scripts.phase_3_voxtell_training.common import (
+from scripts.phase_3_voxtell_finetuning.common import (
     init_distributed,
     cleanup_distributed,
     setup_distributed_logger,
@@ -61,7 +61,7 @@ from scripts.phase_3_voxtell_training.common import (
 )
 
 # Setup experiment logging directory
-EXP_LOG_DIR = LOGS_DIR / "phase_3_voxtell_training" / "exp_001_naive_finetuning"
+EXP_LOG_DIR = LOGS_DIR / "phase_3_voxtell_finetuning" / "exp_001_naive_finetuning"
 EXP_LOG_DIR.mkdir(parents=True, exist_ok=True)
 logger = logging.getLogger("exp_001_naive_finetuning")
 

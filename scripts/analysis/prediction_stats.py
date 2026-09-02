@@ -8,10 +8,10 @@ OBJECTIVE:        Unified quantitative profiling tool for 3D/4D CT grounding
                   precision/recall, Dice, Hit Rate, and 3D connected component 
                   topology metrics (# Blobs, max blob size).
 USAGE:            python scripts/analysis/prediction_stats.py \
-                      --pred_dir ../data/predictions/phase_2b_voxtell \
+                      --pred_dir ../data/predictions/phase_2b_voxtell_baseline \
                       --gt_dir ../data/raw/segmentations \
                       --split val \
-                      --output_json logs/phase_2b_voxtell/diagnostic_stats.json
+                      --output_json logs/phase_2b_voxtell_baseline/diagnostic_stats.json
 ===============================================================================
 """
 
@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
         description="Unified 3D/4D Segmentation Mask Quantitative Statistical Profiler"
     )
     parser.add_argument(
-        "--pred_dir", type=str, default=str(PREDICTIONS_DIR / "phase_2b_voxtell"),
+        "--pred_dir", type=str, default=str(PREDICTIONS_DIR / "phase_2b_voxtell_baseline"),
         help="Path to directory containing predicted 4D/3D NIfTI masks"
     )
     parser.add_argument(

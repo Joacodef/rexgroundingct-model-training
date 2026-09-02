@@ -1,7 +1,7 @@
 """
 ===============================================================================
 MODULE:         SPOCO 3D Metric Embedding Post-Processing & Instance Clustering
-LOCATION:       scripts/phase_4_alternative_models/common/clustering.py
+LOCATION:       scripts/phase_4_voxtell_spoco/common/clustering.py
 OBJECTIVE:      Convert dense 3D unit-hypersphere metric embeddings into discrete
                 binary segmentation masks via anchor seeds and connected-component
                 Gaussian soft-mask thresholding, with candidate mask pre-filtering.

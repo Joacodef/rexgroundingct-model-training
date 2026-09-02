@@ -1,18 +1,18 @@
 """
 ===============================================================================
-PACKAGE:        Phase 4 Alternative & SPOCO Models Common Infrastructure
-LOCATION:       scripts/phase_4_alternative_models/common/__init__.py
-OBJECTIVE:      Export reusable components for Phase 4 alternative 3D vision-language
-                models and SPOCO metric architectures.
+PACKAGE:        Phase 4 VoxTell-SPOCO Common Infrastructure
+LOCATION:       scripts/phase_4_voxtell_spoco/common/__init__.py
+OBJECTIVE:      Export reusable components for Phase 4 VoxTell-SPOCO 3D vision-language
+                models and metric architectures.
 ===============================================================================
 """
 
-from scripts.phase_4_alternative_models.common.voxtell_spoco import (
+from scripts.phase_4_voxtell_spoco.common.voxtell_spoco import (
     VoxTellSpocoModel,
     VoxTellSpocoDecoder,
     load_voxtell_spoco_model,
 )
-from scripts.phase_4_alternative_models.common.losses import (
+from scripts.phase_4_voxtell_spoco.common.losses import (
     compute_gaussian_soft_mask,
     sample_annotated_anchors,
     sample_unannotated_anchors,
@@ -20,7 +20,7 @@ from scripts.phase_4_alternative_models.common.losses import (
     compute_unlabeled_push_loss,
     compute_spoco_total_loss,
 )
-from scripts.phase_4_alternative_models.common.clustering import (
+from scripts.phase_4_voxtell_spoco.common.clustering import (
     extract_instances_from_embeddings,
 )
 

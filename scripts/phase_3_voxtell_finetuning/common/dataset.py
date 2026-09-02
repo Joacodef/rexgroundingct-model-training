@@ -1,7 +1,7 @@
 """
 ===============================================================================
 MODULE:         Dataset and Caching Infrastructure for Phase 3
-LOCATION:       scripts/phase_3_voxtell_training/common/dataset.py
+LOCATION:       scripts/phase_3_voxtell_finetuning/common/dataset.py
 OBJECTIVE:      Provide native-resolution 3D CT dataset loader with MONAI 
                 spatial cropping, intensity Z-score normalization, atomic fast 
                 RAID SSD volume caching, 85% foreground sampling, laterality-safe 

@@ -1,7 +1,7 @@
 """
 ===============================================================================
 MODULE:         Distributed Utilities for Phase 3 Model Fine-Tuning
-LOCATION:       scripts/phase_3_voxtell_training/common/distributed.py
+LOCATION:       scripts/phase_3_voxtell_finetuning/common/distributed.py
 OBJECTIVE:      Provide server-agnostic PyTorch DistributedDataParallel (DDP) 
                 initialization, clean teardown, rank-0 selective logging, and 
                 unwrapped model serialization across Phase 3 training pipelines.

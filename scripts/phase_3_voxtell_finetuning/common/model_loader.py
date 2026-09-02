@@ -1,7 +1,7 @@
 """
 ===============================================================================
 MODULE:         VoxTell Model Loader for Phase 3
-LOCATION:       scripts/phase_3_voxtell_training/common/model_loader.py
+LOCATION:       scripts/phase_3_voxtell_finetuning/common/model_loader.py
 OBJECTIVE:      Instantiate VoxTellModel from plans.json configuration and load 
                 pre-trained baseline checkpoint weights for Phase 3 fine-tuning.
 ===============================================================================

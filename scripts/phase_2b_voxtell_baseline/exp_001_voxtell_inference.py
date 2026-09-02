@@ -2,11 +2,11 @@
 ===============================================================================
 SCRIPT:         VoxTell Batch Zero-Shot Baseline Inference Pipeline (Wrapper)
 PHASE:          Phase 2B — VoxTell Zero-Shot Baseline & Preprocessing Audit
-LOCATION:       scripts/phase_2b_voxtell/exp_001_voxtell_inference.py
+LOCATION:       scripts/phase_2b_voxtell_baseline/exp_001_voxtell_inference.py
 OBJECTIVE:      Backward-compatible execution wrapper for Phase 2B experiments.
                 Delegates to the Centralized Universal VoxTell Inference Engine
                 (scripts/common/voxtell_inference.py).
-USAGE:          python scripts/phase_2b_voxtell/exp_001_voxtell_inference.py --split val
+USAGE:          python scripts/phase_2b_voxtell_baseline/exp_001_voxtell_inference.py --split val
 ===============================================================================
 """
 

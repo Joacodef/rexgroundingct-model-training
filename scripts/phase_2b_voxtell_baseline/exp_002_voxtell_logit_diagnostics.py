@@ -2,11 +2,11 @@
 ===============================================================================
 SCRIPT:         VoxTell Continuous Logit & Threshold Diagnostic Pipeline
 PHASE:          Phase 2B — VoxTell Zero-Shot Baseline & Preprocessing Audit
-LOCATION:       scripts/phase_2b_voxtell/exp_002_voxtell_logit_diagnostics.py
+LOCATION:       scripts/phase_2b_voxtell_baseline/exp_002_voxtell_logit_diagnostics.py
 OBJECTIVE:      Profiles continuous sigmoid probability heatmaps (min, max, p95, p99, p99.9)
                 and sweeps binarization thresholds (p_c in [0.01, 0.50]) to diagnose
                 over-pruning failure modes in VoxTell zero-shot predictions.
-USAGE:          python scripts/phase_2b_voxtell/exp_002_voxtell_logit_diagnostics.py --num_cases 5
+USAGE:          python scripts/phase_2b_voxtell_baseline/exp_002_voxtell_logit_diagnostics.py --num_cases 5
 ===============================================================================
 """
 
@@ -207,7 +207,7 @@ def main():
         print(f"Threshold p_c = {t:<5.2f} -> Average Dice: {avg_d:.4f}")
     print("="*70)
 
-    out_log_dir = LOGS_DIR / "phase_2b_voxtell" / "exp_002_voxtell_logit_diagnostics"
+    out_log_dir = LOGS_DIR / "phase_2b_voxtell_baseline" / "exp_002_voxtell_logit_diagnostics"
     out_log_dir.mkdir(parents=True, exist_ok=True)
     summary_path = out_log_dir / "eval_results_diagnostics.json"
 

@@ -2,13 +2,13 @@
 ===============================================================================
 SCRIPT:         VoxTell Positive-Unlabeled (PU) Mean Teacher Fine-Tuning Pipeline
 PHASE:          Phase 3 — Model Fine-Tuning & Loss Hypotheses Benchmarking
-LOCATION:       scripts/phase_3_voxtell_training/exp_002_pu_mean_teacher.py
+LOCATION:       scripts/phase_3_voxtell_finetuning/exp_002_pu_mean_teacher.py
 OBJECTIVE:      Fine-tune VoxTell using Positive-Unlabeled (PU) learning with 
                 dilated ROI-masked supervision and Mean Teacher EMA consistency 
                 regularization to resolve instance suppression bias (Wolny et al., 2022).
                 Supports server-agnostic multi-GPU (DDP) and single-GPU execution.
-USAGE:          Single-GPU: python scripts/phase_3_voxtell_training/exp_002_pu_mean_teacher.py
-                Multi-GPU:  torchrun --nproc_per_node=N scripts/phase_3_voxtell_training/exp_002_pu_mean_teacher.py
+USAGE:          Single-GPU: python scripts/phase_3_voxtell_finetuning/exp_002_pu_mean_teacher.py
+                Multi-GPU:  torchrun --nproc_per_node=N scripts/phase_3_voxtell_finetuning/exp_002_pu_mean_teacher.py
 ===============================================================================
 """
 
@@ -44,7 +44,7 @@ from scripts.config import (
 )
 
 # Import Phase 3 Shared Common Infrastructure
-from scripts.phase_3_voxtell_training.common import (
+from scripts.phase_3_voxtell_finetuning.common import (
     init_distributed,
     cleanup_distributed,
     setup_distributed_logger,
@@ -57,7 +57,7 @@ from scripts.phase_3_voxtell_training.common import (
 
 
 # Setup experiment logging directory
-EXP_LOG_DIR = LOGS_DIR / "phase_3_voxtell_training" / "exp_002_pu_mean_teacher"
+EXP_LOG_DIR = LOGS_DIR / "phase_3_voxtell_finetuning" / "exp_002_pu_mean_teacher"
 EXP_LOG_DIR.mkdir(parents=True, exist_ok=True)
 logger = logging.getLogger("exp_002_pu_mean_teacher")
 

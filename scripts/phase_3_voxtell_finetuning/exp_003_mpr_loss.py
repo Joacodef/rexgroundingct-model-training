@@ -2,7 +2,7 @@
 ===============================================================================
 SCRIPT:         VoxTell Multi-Planar Projection Regularization (MPR) Fine-Tuning
 PHASE:          Phase 3 — Model Fine-Tuning & Loss Hypotheses Benchmarking
-LOCATION:       scripts/phase_3_voxtell_training/exp_003_mpr_loss.py
+LOCATION:       scripts/phase_3_voxtell_finetuning/exp_003_mpr_loss.py
 OBJECTIVE:      Fine-tune VoxTell using 3D Multi-Planar Projection Regularization (MPR) 
                 consistency loss with exponential ramp-up. Builds on the Student-Teacher 
                 Mean Teacher framework of Exp 002, but replaces 3D voxel-wise MSE with 
@@ -41,7 +41,7 @@ from scripts.config import (
 )
 
 # Import Phase 3 Shared Common Infrastructure
-from scripts.phase_3_voxtell_training.common import (
+from scripts.phase_3_voxtell_finetuning.common import (
     init_distributed,
     cleanup_distributed,
     setup_distributed_logger,
@@ -54,7 +54,7 @@ from scripts.phase_3_voxtell_training.common import (
 
 
 # Setup experiment logging directory
-EXP_LOG_DIR = LOGS_DIR / "phase_3_voxtell_training" / "exp_003_mpr_loss"
+EXP_LOG_DIR = LOGS_DIR / "phase_3_voxtell_finetuning" / "exp_003_mpr_loss"
 EXP_LOG_DIR.mkdir(parents=True, exist_ok=True)
 logger = logging.getLogger("exp_003_mpr_loss")
 

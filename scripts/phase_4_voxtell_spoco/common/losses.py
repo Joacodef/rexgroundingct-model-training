@@ -13,8 +13,33 @@ OBJECTIVE:      Implement mathematically calibrated Gaussian soft masks,
 import math
 from typing import List, Tuple, Any, Optional
 import numpy as np
-from scipy.ndimage import label
+from scipy.ndimage import label, binary_dilation
 import torch
+
+
+def _confirmed_background_mask(target_mask: torch.Tensor, roi_dilation_voxels: int) -> torch.Tensor:
+    """
+    Signature:
+        _confirmed_background_mask(target_mask: torch.Tensor, roi_dilation_voxels: int) -> torch.Tensor
+
+    Objective:
+        Return a bool tensor (same shape/device as `target_mask`) that is True only for
+        voxels treated as confirmed background: everything outside the annotated
+        foreground dilated by `roi_dilation_voxels`. The dilation band around each lesion
+        is excluded so the push / unannotated-consistency terms do not fight the lesion
+        boundary and partial-volume edges.
+
+    Inputs:
+        target_mask (torch.Tensor): Binary target tensor of shape (Z, Y, X).
+        roi_dilation_voxels (int): Morphological dilation radius in voxels (0 disables).
+
+    Outputs:
+        torch.Tensor: Bool "confirmed background" mask.
+    """
+    fg_np = (target_mask.detach().cpu().numpy() > 0.5)
+    if roi_dilation_voxels and roi_dilation_voxels > 0 and fg_np.any():
+        fg_np = binary_dilation(fg_np, iterations=int(roi_dilation_voxels))
+    return torch.from_numpy(~fg_np).to(device=target_mask.device)
 
 
 def compute_gaussian_soft_mask(
@@ -74,18 +99,24 @@ def compute_gaussian_soft_mask(
 
 def sample_annotated_anchors(
     target_mask: torch.Tensor,
+    max_components: int = 8,
 ) -> List[Tuple[Tuple[int, int, int], torch.Tensor]]:
     """
     Signature:
-        sample_annotated_anchors(target_mask: torch.Tensor) -> list[tuple[tuple[int, int, int], torch.Tensor]]
+        sample_annotated_anchors(target_mask: torch.Tensor, max_components: int = 8) -> list[tuple[tuple[int, int, int], torch.Tensor]]
 
     Objective:
         Sample anchor voxels from annotated ground-truth lesion components using 3D
         connected-component decomposition. If a finding contains multiple disjoint lesions,
         extracts one anchor per component and pairs it with that component's isolated mask.
+        Only the `max_components` largest components are kept: a single micronodule /
+        reticular-thickening crop can hold dozens-to-hundreds of components, and each one
+        adds a full (Z, Y, X) soft mask to the autograd tape downstream, which is a
+        latent OOM.
 
     Inputs:
         target_mask (torch.Tensor): Binary target tensor of shape (Z, Y, X).
+        max_components (int): Maximum number of components to return, largest first (default 8).
 
     Outputs:
         list[tuple[tuple[int, int, int], torch.Tensor]]: List of tuples ((z, y, x), component_mask).
@@ -98,15 +129,23 @@ def sample_annotated_anchors(
     if num_features == 0:
         return []
 
+    # Component label ids ordered by descending voxel count (bincount index 0 == background).
+    counts = np.bincount(labeled_array.ravel(), minlength=num_features + 1)
+    comp_ids = (np.argsort(counts[1:])[::-1] + 1).tolist()
+    if max_components is not None and len(comp_ids) > max_components:
+        comp_ids = comp_ids[:max_components]
+
     results = []
     device = target_mask.device
 
-    for comp_id in range(1, num_features + 1):
+    for comp_id in comp_ids:
         comp_indices = np.argwhere(labeled_array == comp_id)
         if len(comp_indices) == 0:
             continue
 
-        # Extract median voxel coordinate of this connected component
+        # Interior anchor: the raster-order median voxel of the component. Guaranteed
+        # inside the component but not a medial-axis point; multi-anchor skeleton
+        # sampling for large / diffuse lesions is Phase 4 Exp 003.
         med_idx = len(comp_indices) // 2
         anchor_coord = tuple(int(x) for x in comp_indices[med_idx])
 
@@ -123,16 +162,18 @@ def sample_unannotated_anchors(
     delta_var: float = 0.5,
     num_anchors: int = 8,
     volume_threshold: float = 0.05,
+    roi_dilation_voxels: int = 2,
 ) -> List[Tuple[int, int, int]]:
     """
     Signature:
-        sample_unannotated_anchors(embeddings: torch.Tensor, target_mask: torch.Tensor, delta_var: float = 0.5, num_anchors: int = 8, volume_threshold: float = 0.05) -> list[tuple[int, int, int]]
+        sample_unannotated_anchors(embeddings: torch.Tensor, target_mask: torch.Tensor, delta_var: float = 0.5, num_anchors: int = 8, volume_threshold: float = 0.05, roi_dilation_voxels: int = 2) -> list[tuple[int, int, int]]
 
     Objective:
         Sample unannotated anchor voxels from the background region using iterative
         non-maximum coverage suppression (Wolny et al., CVPR 2022). Each sampled anchor
         suppresses its delta_var neighborhood to force subsequent anchors to explore
-        distinct unannotated structures rather than redundant background air.
+        distinct unannotated structures rather than redundant background air. The
+        annotated foreground dilated by `roi_dilation_voxels` is excluded from the pool.
 
     Inputs:
         embeddings (torch.Tensor): Metric embeddings tensor of shape (D, Z, Y, X).
@@ -140,11 +181,12 @@ def sample_unannotated_anchors(
         delta_var (float): Intra-cluster distance margin for suppression (default 0.5).
         num_anchors (int): Maximum number of unlabeled anchors to sample (default 8).
         volume_threshold (float): Stopping fraction of uncovered candidate voxels (default 0.05).
+        roi_dilation_voxels (int): Dilation radius of the excluded lesion band (default 2, 0 disables).
 
     Outputs:
         list[tuple[int, int, int]]: List of (z, y, x) anchor coordinates in unannotated regions.
     """
-    unlabeled_mask = (target_mask <= 0.5).clone()
+    unlabeled_mask = _confirmed_background_mask(target_mask, roi_dilation_voxels)
     total_unlabeled = unlabeled_mask.sum().item()
     if total_unlabeled == 0:
         return []
@@ -208,10 +250,11 @@ def compute_unlabeled_push_loss(
     target_mask: torch.Tensor,
     delta_dist: float = 1.5,
     max_bg_samples: int = 10000,
+    roi_dilation_voxels: int = 2,
 ) -> torch.Tensor:
     """
     Signature:
-        compute_unlabeled_push_loss(embeddings: torch.Tensor, instance_anchors: list[tuple[int, int, int]], target_mask: torch.Tensor, delta_dist: float = 1.5, max_bg_samples: int = 10000) -> torch.Tensor
+        compute_unlabeled_push_loss(embeddings: torch.Tensor, instance_anchors: list[tuple[int, int, int]], target_mask: torch.Tensor, delta_dist: float = 1.5, max_bg_samples: int = 10000, roi_dilation_voxels: int = 2) -> torch.Tensor
 
     Objective:
         Compute hinge repulsion push force between annotated instance anchors and
@@ -225,6 +268,7 @@ def compute_unlabeled_push_loss(
         delta_dist (float): Inter-cluster push distance margin (default 1.5).
         max_bg_samples (int): Maximum background voxels to sample for the Monte Carlo
             approximation of the background expectation (default 10000).
+        roi_dilation_voxels (int): Dilation radius of the excluded lesion band (default 2, 0 disables).
 
     Outputs:
         torch.Tensor: Scalar unlabeled push loss.
@@ -232,7 +276,7 @@ def compute_unlabeled_push_loss(
     if not instance_anchors:
         return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
 
-    bg_mask = (target_mask <= 0.5)
+    bg_mask = _confirmed_background_mask(target_mask, roi_dilation_voxels)
     bg_indices = torch.nonzero(bg_mask, as_tuple=False)  # (N_bg, 3)
     num_bg = bg_indices.shape[0]
     if num_bg == 0:
@@ -272,6 +316,7 @@ def compute_spoco_total_loss(
     student_embeds: torch.Tensor,
     teacher_embeds: torch.Tensor,
     targets: torch.Tensor,
+    is_absent: Optional[torch.Tensor] = None,
     delta_var: float = 0.5,
     delta_dist: float = 1.5,
     pmaps_threshold: float = 0.5,
@@ -281,11 +326,13 @@ def compute_spoco_total_loss(
     num_unlabeled_anchors: int = 8,
     volume_threshold: float = 0.05,
     negative_supervision: bool = True,
+    max_annotated_components: int = 8,
+    roi_dilation_voxels: int = 2,
     return_details: bool = False,
 ) -> Any:
     """
     Signature:
-        compute_spoco_total_loss(student_embeds: torch.Tensor, teacher_embeds: torch.Tensor, targets: torch.Tensor, delta_var: float = 0.5, delta_dist: float = 1.5, pmaps_threshold: float = 0.5, sigma: float | None = None, w_con: float = 0.1, w_unl_push: float = 0.1, num_unlabeled_anchors: int = 8, volume_threshold: float = 0.05, negative_supervision: bool = True, return_details: bool = False) -> tuple
+        compute_spoco_total_loss(student_embeds: torch.Tensor, teacher_embeds: torch.Tensor, targets: torch.Tensor, is_absent: torch.Tensor | None = None, delta_var: float = 0.5, delta_dist: float = 1.5, pmaps_threshold: float = 0.5, sigma: float | None = None, w_con: float = 0.1, w_unl_push: float = 0.1, num_unlabeled_anchors: int = 8, volume_threshold: float = 0.05, negative_supervision: bool = True, max_annotated_components: int = 8, roi_dilation_voxels: int = 2, return_details: bool = False) -> tuple
 
     Objective:
         Compute full 3D SPOCO loss: Instance-level soft Dice on annotated objects (L_obj),
@@ -293,10 +340,19 @@ def compute_spoco_total_loss(
         Unlabeled Background Push repulsion (L_unl_push), and optional null-target supervision
         on confirmed absent findings.
 
+        Each (b, n) prompt is routed by whether the finding is genuinely absent from the
+        scan (`is_absent`), NOT by whether its target happens to be empty in the crop:
+          - absent finding                -> negative supervision (penalize soft-mask mass);
+          - present finding, empty crop   -> skipped entirely (no signal, no penalty);
+          - present finding, non-empty     -> L_obj + L_unl_push + L_con.
+        When `is_absent` is None, the legacy behavior is used (empty target => absent).
+
     Inputs:
         student_embeds (torch.Tensor): Student embeddings of shape (B, N, D, Z, Y, X).
         teacher_embeds (torch.Tensor): EMA Teacher embeddings of shape (B, N, D, Z, Y, X).
         targets (torch.Tensor): Ground truth target tensor of shape (B, N, Z, Y, X).
+        is_absent (torch.Tensor | None): Bool tensor of shape (B, N), True where the prompt
+            is a confirmed-absent (sampled negative) finding. None => infer from empty target.
         delta_var (float): Intra-cluster pull margin (default 0.5).
         delta_dist (float): Inter-cluster push margin (default 1.5).
         pmaps_threshold (float): Soft mask probability cutoff at distance delta_var (default 0.5).
@@ -306,6 +362,10 @@ def compute_spoco_total_loss(
         num_unlabeled_anchors (int): Maximum unlabeled anchors sampled per finding (default 8).
         volume_threshold (float): Stopping fraction for unlabeled coverage (default 0.05).
         negative_supervision (bool): Penalize false-positive anchor masks on absent findings (default True).
+        max_annotated_components (int): Cap on connected components supervised per finding,
+            largest first (default 8); bounds autograd-tape memory on multi-focal crops.
+        roi_dilation_voxels (int): Lesion-band dilation (voxels) excluded from the push and
+            unannotated-anchor "confirmed background" pools (default 2, 0 disables).
         return_details (bool): If True, returns (total_loss, l_obj, l_con, l_push). Otherwise (total_loss, l_obj, l_con).
 
     Outputs:
@@ -324,11 +384,21 @@ def compute_spoco_total_loss(
             t_embed = teacher_embeds[b, n]  # (D, Z, Y, X)
             tgt = targets[b, n]             # (Z, Y, X)
 
-            is_negative_finding = (tgt.sum() == 0)
+            tgt_empty = (tgt.sum() == 0)
+            if is_absent is not None:
+                finding_absent = bool(is_absent[b, n])
+            else:
+                finding_absent = bool(tgt_empty)
+
+            # Present finding whose lesion fell outside this random crop: no usable
+            # signal in the patch, and penalizing it as background is the label-noise
+            # bug this flag fixes. Skip the prompt entirely.
+            if not finding_absent and tgt_empty:
+                continue
 
             # 1. Supervised Instance Soft Dice on Annotated Anchors (Connected-Component Multi-Instance)
-            if not is_negative_finding:
-                annotated_items = sample_annotated_anchors(tgt)
+            if not finding_absent:
+                annotated_items = sample_annotated_anchors(tgt, max_components=max_annotated_components)
                 instance_anchor_coords = []
 
                 if annotated_items:
@@ -356,6 +426,7 @@ def compute_spoco_total_loss(
                             instance_anchors=instance_anchor_coords,
                             target_mask=tgt,
                             delta_dist=delta_dist,
+                            roi_dilation_voxels=roi_dilation_voxels,
                         )
                         loss_push_list.append(l_push)
 
@@ -366,6 +437,7 @@ def compute_spoco_total_loss(
                     delta_var=delta_var,
                     num_anchors=num_unlabeled_anchors,
                     volume_threshold=volume_threshold,
+                    roi_dilation_voxels=roi_dilation_voxels,
                 )
                 if unlabeled_anchors:
                     u_anchor_tensor = torch.tensor(unlabeled_anchors, device=device, dtype=torch.long)
@@ -396,6 +468,7 @@ def compute_spoco_total_loss(
                         delta_var=delta_var,
                         num_anchors=min(4, num_unlabeled_anchors),
                         volume_threshold=volume_threshold,
+                        roi_dilation_voxels=roi_dilation_voxels,
                     )
                     if neg_anchors:
                         neg_anchor_tensor = torch.tensor(neg_anchors, device=device, dtype=torch.long)
@@ -408,9 +481,14 @@ def compute_spoco_total_loss(
                         )
                         loss_obj_list.append(s_neg_soft.mean())
 
-    loss_obj = torch.stack(loss_obj_list).mean() if loss_obj_list else torch.tensor(0.0, device=device, requires_grad=True)
-    loss_con = torch.stack(loss_con_list).mean() if loss_con_list else torch.tensor(0.0, device=device, requires_grad=True)
-    loss_push = torch.stack(loss_push_list).mean() if loss_push_list else torch.tensor(0.0, device=device, requires_grad=True)
+    # A zero that still carries a grad_fn back to `student_embeds`, so that a step in
+    # which every prompt was skipped (e.g. a crop where all positives fell out of frame)
+    # produces a valid no-op backward instead of a bare requires_grad leaf.
+    zero = student_embeds.sum() * 0.0
+
+    loss_obj = torch.stack(loss_obj_list).mean() if loss_obj_list else zero
+    loss_con = torch.stack(loss_con_list).mean() if loss_con_list else zero
+    loss_push = torch.stack(loss_push_list).mean() if loss_push_list else zero
 
     total_loss = loss_obj + (w_con * loss_con) + (w_unl_push * loss_push)
 

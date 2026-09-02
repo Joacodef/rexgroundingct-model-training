@@ -198,7 +198,9 @@ class ReXDataset(Dataset):
             idx (int): Dataset entry index.
 
         Outputs:
-            dict: Data dictionary containing 'image', 'seg', 'text_embeddings', and 'scan_id'.
+            dict: Data dictionary containing 'image', 'seg', 'text_embeddings',
+                'is_absent_finding' (bool tensor, True only for sampled negative prompts),
+                and 'scan_id'.
         """
         entry = self.entries[idx]
         scan_id = entry['name'].replace('.nii.gz', '')
@@ -314,28 +316,40 @@ class ReXDataset(Dataset):
 
             neg_text_embeddings = torch.cat(neg_embeds_list, dim=0)
             neg_seg_cropped = torch.zeros((neg_text_embeddings.shape[0], *pos_seg_cropped.shape[1:]), dtype=pos_seg_cropped.dtype)
-            
+
             text_embeddings = torch.cat([pos_text_embeddings, neg_text_embeddings], dim=0)
             seg_cropped = torch.cat([pos_seg_cropped, neg_seg_cropped], dim=0)
+            num_absent = neg_text_embeddings.shape[0]
         else:
             text_embeddings = pos_text_embeddings
             seg_cropped = pos_seg_cropped
-        
+            num_absent = 0
+
+        # Per-prompt "confirmed absent from the scan" flag: True only for the sampled
+        # negative prompts (which are appended last). Positive prompts are always False,
+        # even when their lesion happens to fall outside the random crop for this item.
+        # Downstream SPOCO loss uses this to distinguish a real empty target from an
+        # out-of-crop positive, rather than inferring it from `seg.sum() == 0`.
+        is_absent_finding = torch.zeros(text_embeddings.shape[0], dtype=torch.bool)
+        if num_absent > 0:
+            is_absent_finding[-num_absent:] = True
+
         data_dict = {
             'image': img_normalized,
             'seg': seg_cropped
         }
-        
+
         # Both branches now run a RandCropByPosNegLabeld(num_samples=1) pipeline, which always
         # returns a single-element list rather than a bare transformed dict.
         transformed = self.transforms(data_dict)
         transformed = transformed[0]
         image_tensor = torch.as_tensor(transformed['image'])
         seg_tensor = torch.as_tensor(transformed['seg'])
-            
+
         return {
             'image': image_tensor,
             'seg': seg_tensor,
             'text_embeddings': text_embeddings,
+            'is_absent_finding': is_absent_finding,
             'scan_id': scan_id
         }

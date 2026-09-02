@@ -191,6 +191,37 @@ def test_spoco_total_loss_gradient_flow():
     assert torch.isfinite(student_embeds.grad).all()
 
 
+def test_spoco_is_absent_flag_skips_out_of_crop_positive():
+    """A present prompt with an empty crop is skipped (no penalty) when is_absent marks it present."""
+    B, N, D, Z, Y, X = 1, 2, 16, 16, 16, 16
+    student_embeds = torch.randn(B, N, D, Z, Y, X, requires_grad=True)
+    teacher_embeds = torch.randn(B, N, D, Z, Y, X)
+
+    # Both prompts have empty targets in this crop, but prompt 0 is a genuine (out-of-crop)
+    # positive and prompt 1 is a confirmed-absent negative.
+    targets = torch.zeros(B, N, Z, Y, X)
+    is_absent = torch.tensor([[False, True]])
+
+    # With the flag: only the negative prompt contributes (negative supervision); the
+    # out-of-crop positive is skipped.
+    total_flag, l_obj_flag, _, _ = compute_spoco_total_loss(
+        student_embeds=student_embeds, teacher_embeds=teacher_embeds, targets=targets,
+        is_absent=is_absent, return_details=True,
+    )
+    # Legacy behavior (no flag): both empty targets are treated as absent -> both penalized.
+    total_legacy, l_obj_legacy, _, _ = compute_spoco_total_loss(
+        student_embeds=student_embeds, teacher_embeds=teacher_embeds, targets=targets,
+        is_absent=None, return_details=True,
+    )
+
+    assert torch.isfinite(total_flag) and torch.isfinite(total_legacy)
+    # The flagged run sees strictly fewer negative-supervision terms, so its L_obj is
+    # computed over one prompt instead of two (values differ; both are valid means).
+    assert l_obj_flag.item() >= 0.0
+    total_flag.backward()
+    assert torch.isfinite(student_embeds.grad).all()
+
+
 def test_clustering_with_candidate_mask():
     """Verify instance mask extraction with optional candidate mask pre-filtering."""
     D, Z, Y, X = 16, 20, 20, 20

@@ -17,6 +17,8 @@ USAGE:          Single-GPU: python scripts/phase_4_voxtell_spoco/exp_001_voxtell
 
 import os
 import sys
+import copy
+import math
 import argparse
 import logging
 from pathlib import Path
@@ -101,6 +103,33 @@ def apply_student_view_perturbation(images: torch.Tensor) -> torch.Tensor:
     return perturbed
 
 
+def consistency_rampup_weight(epoch: int, max_epochs: int, max_weight: float) -> float:
+    """
+    Signature:
+        consistency_rampup_weight(epoch: int, max_epochs: int, max_weight: float) -> float
+
+    Objective:
+        Gaussian exponential ramp-up for the SPOCO consistency weight,
+        gamma(t) = max_weight * exp(-5 * (1 - t/T)^2) (Gao et al., 2022; the same
+        schedule as Phase 3 Exp 003 get_mpr_rampup_weight). Near 0 in the first epochs,
+        when the student and the EMA teacher are both uninformative, and approaching
+        max_weight by the final epoch.
+
+    Inputs:
+        epoch (int): Current 1-indexed epoch.
+        max_epochs (int): Total number of epochs T.
+        max_weight (float): Asymptotic consistency weight.
+
+    Outputs:
+        float: Consistency weight to use for this epoch.
+    """
+    T = float(max_epochs)
+    if T <= 1.0:
+        return max_weight
+    ratio = max(0.0, 1.0 - (epoch / T))
+    return max_weight * math.exp(-5.0 * (ratio ** 2))
+
+
 def update_ema_variables(model: nn.Module, ema_model: nn.Module, alpha: float) -> None:
     """
     Signature:
@@ -173,6 +202,7 @@ def evaluate_val_loss(
             images = batch["image"].to(device, non_blocking=True)
             targets = batch["seg"].to(device, non_blocking=True)
             text_embeds = (batch.get("text_embeddings") if "text_embeddings" in batch else batch["text_embedding"]).to(device, non_blocking=True)
+            is_absent = batch["is_absent_finding"].to(device, non_blocking=True) if "is_absent_finding" in batch else None
 
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 s_embeds = model(images, text_embeds, return_embeddings=True)
@@ -180,6 +210,7 @@ def evaluate_val_loss(
                     student_embeds=s_embeds,
                     teacher_embeds=s_embeds,
                     targets=targets,
+                    is_absent=is_absent,
                     delta_var=delta_var,
                     delta_dist=delta_dist,
                     pmaps_threshold=pmaps_threshold,
@@ -275,24 +306,26 @@ def main() -> None:
         except Exception as e:
             logger.warning(f"Failed to initialize WandB: {e}")
 
-    # 1. Instantiate Student & Teacher VoxTell-SPOCO Models
+    # 1. Instantiate Student & Teacher VoxTell-SPOCO Models. The Teacher is a deep copy
+    #    of the Student (identical weights), avoiding a second multi-GB checkpoint load
+    #    from disk that the previous load_state_dict form immediately overwrote.
     student_model = load_voxtell_spoco_model(
         model_dir=str(MODEL_DIR),
         device=device_str,
         deep_supervision=False,
     )
 
-    teacher_model = load_voxtell_spoco_model(
-        model_dir=str(MODEL_DIR),
-        device=device_str,
-        deep_supervision=False,
-    )
-    teacher_model.load_state_dict(student_model.state_dict())
+    teacher_model = copy.deepcopy(student_model)
     for param in teacher_model.parameters():
         param.requires_grad = False
     teacher_model.eval()
 
-    # Wrap Student in DDP if multi-GPU
+    # Wrap Student in DDP if multi-GPU. find_unused_parameters stays True: training only
+    # exercises return_embeddings=True, so the decoder's seg_layers and the stage-0
+    # text-query projection (used by the inference logit head) receive no gradient. An
+    # auxiliary logit loss on the annotated ROI would let this go False and also
+    # fine-tune the inference seed map -- tracked as a candidate Exp 001b, not part of
+    # this baseline.
     if is_distributed:
         student_model = DDP(
             student_model,
@@ -379,6 +412,7 @@ def main() -> None:
         images = batch["image"].to(device, non_blocking=True)
         targets = batch["seg"].to(device, non_blocking=True)
         text_embeds = (batch.get("text_embeddings") if "text_embeddings" in batch else batch["text_embedding"]).to(device, non_blocking=True)
+        is_absent = batch["is_absent_finding"].to(device, non_blocking=True) if "is_absent_finding" in batch else None
 
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             # Dual view perturbation: student receives perturbed view, teacher receives unperturbed view
@@ -391,6 +425,7 @@ def main() -> None:
                 student_embeds=s_embeds,
                 teacher_embeds=t_embeds,
                 targets=targets,
+                is_absent=is_absent,
                 delta_var=args.delta_var,
                 delta_dist=args.delta_dist,
                 pmaps_threshold=args.kernel_threshold,
@@ -449,6 +484,11 @@ def main() -> None:
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
+        # Gaussian ramp-up for the consistency weight: near 0 early (student and EMA
+        # teacher are both uninformative, so enforcing agreement injects noise),
+        # approaching args.w_con by the final epoch.
+        w_con_epoch = consistency_rampup_weight(epoch, args.epochs, args.w_con)
+
         student_model.train()
         epoch_loss_sum = 0.0
         epoch_obj_sum = 0.0
@@ -461,6 +501,7 @@ def main() -> None:
             images = batch["image"].to(device, non_blocking=True)
             targets = batch["seg"].to(device, non_blocking=True)
             text_embeds = (batch.get("text_embeddings") if "text_embeddings" in batch else batch["text_embedding"]).to(device, non_blocking=True)
+            is_absent = batch["is_absent_finding"].to(device, non_blocking=True) if "is_absent_finding" in batch else None
             scan_id = batch["scan_id"][0] if "scan_id" in batch else f"step_{total_steps}"
 
             optimizer.zero_grad(set_to_none=True)
@@ -475,11 +516,12 @@ def main() -> None:
                     student_embeds=s_embeds,
                     teacher_embeds=t_embeds,
                     targets=targets,
+                    is_absent=is_absent,
                     delta_var=args.delta_var,
                     delta_dist=args.delta_dist,
                     pmaps_threshold=args.kernel_threshold,
                     sigma=args.sigma,
-                    w_con=args.w_con,
+                    w_con=w_con_epoch,
                     w_unl_push=args.w_unl_push,
                     num_unlabeled_anchors=args.max_unlabeled_anchors,
                     volume_threshold=args.volume_threshold,
@@ -551,7 +593,7 @@ def main() -> None:
             logger.info(
                 f"Epoch {epoch:03d}/{args.epochs:03d} | "
                 f"Train Loss: {avg_epoch_loss:.4f} (Obj: {avg_obj_loss:.4f}, Con: {avg_con_loss:.4f}, Push: {avg_push_loss:.4f}) | "
-                f"Val Loss: {val_loss:.4f}"
+                f"w_con: {w_con_epoch:.4f} | Val Loss: {val_loss:.4f}"
             )
 
             if args.wandb:
@@ -563,6 +605,7 @@ def main() -> None:
                         "train/obj_loss": avg_obj_loss,
                         "train/con_loss": avg_con_loss,
                         "train/push_loss": avg_push_loss,
+                        "train/w_con": w_con_epoch,
                         "val/loss": val_loss,
                     })
                 except Exception:

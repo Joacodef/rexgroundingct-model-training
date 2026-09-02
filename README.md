@@ -157,7 +157,7 @@ sbatch bash_scripts/eval_exp_001_spoco.slurm
 sbatch --export=ALL,CKPT=<path/to/checkpoint.pt> bash_scripts/eval_exp_001_spoco.slurm
 
 # Inference only (no scoring):
-.venv/bin/python scripts/phase_4_voxtell_spoco/exp_001_voxtell_spoco_inference.py \
+.venv/bin/python scripts/phase_4_voxtell_spoco/common/spoco_inference.py \
   --split val --checkpoint logs/phase_4_voxtell_spoco/exp_001_voxtell_spoco/latest_model.pt \
   --output_dir <pred_dir>
 ```

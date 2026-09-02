@@ -2,16 +2,17 @@
 ===============================================================================
 SCRIPT:         VoxTell-SPOCO Inference & Instance Extraction
 PHASE:          Phase 4 — VoxTell-SPOCO Metric Learning
-LOCATION:       scripts/phase_4_voxtell_spoco/exp_001_voxtell_spoco_inference.py
-OBJECTIVE:      Run sliding-window inference with a fine-tuned VoxTell-SPOCO checkpoint,
+LOCATION:       scripts/phase_4_voxtell_spoco/common/spoco_inference.py
+OBJECTIVE:      Run sliding-window inference with any fine-tuned VoxTell-SPOCO checkpoint,
                 producing per-prompt dense 32D metric embeddings AND VoxTell's native
                 text-query logit map in one pass. The logit map argmax is used as the
                 text-conditioned seed; the calibrated Gaussian soft mask on the unit
                 hypersphere is expanded from that seed and binarized into a 3D instance
                 mask. Predictions are saved as 4D (F, X, Y, Z) NIfTI anchored to the
                 parent CT scan header, ready for scripts/common/evaluate.py.
-USAGE:          python scripts/phase_4_voxtell_spoco/exp_001_voxtell_spoco_inference.py \
-                    --split val --checkpoint logs/phase_4_voxtell_spoco/exp_001_voxtell_spoco/latest_model.pt
+USAGE:          python scripts/phase_4_voxtell_spoco/common/spoco_inference.py \
+                    --split val --checkpoint logs/phase_4_voxtell_spoco/exp_001_voxtell_spoco/latest_model.pt \
+                    --output_dir <pred_dir>
 ===============================================================================
 """
 
@@ -33,7 +34,7 @@ load_dotenv(override=False)
 import numpy as np
 import torch
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
@@ -49,7 +50,7 @@ from scripts.phase_4_voxtell_spoco.common import (
     extract_instances_from_embeddings,
 )
 
-logger = logging.getLogger("exp_001_voxtell_spoco_inference")
+logger = logging.getLogger("spoco_inference")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 PATCH = 192
@@ -243,8 +244,8 @@ def top_k_seeds(prob: np.ndarray, k: int, min_separation: int) -> list:
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for Phase 4 Exp 001 VoxTell-SPOCO inference."""
-    p = argparse.ArgumentParser(description="Phase 4 Exp 001: VoxTell-SPOCO inference & instance extraction")
+    """Parse CLI arguments for Phase 4 VoxTell-SPOCO inference."""
+    p = argparse.ArgumentParser(description="Phase 4: VoxTell-SPOCO inference & instance extraction")
     p.add_argument("--split", type=str, default="val", choices=["train", "val", "test"])
     p.add_argument("--checkpoint", type=str, required=True, help="Path to a VoxTell-SPOCO .pt checkpoint")
     p.add_argument("--use_teacher", action="store_true", help="Load teacher_state_dict instead of student_state_dict")

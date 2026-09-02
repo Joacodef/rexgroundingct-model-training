@@ -168,10 +168,11 @@ def evaluate_val_loss(
     num_unlabeled_anchors: int = 8,
     volume_threshold: float = 0.05,
     max_batches: int = 20,
+    union_target: bool = True,
 ) -> float:
     """
     Signature:
-        evaluate_val_loss(model: nn.Module, val_loader: DataLoader, device: str, delta_var: float = 0.5, delta_dist: float = 1.5, pmaps_threshold: float = 0.5, sigma: float | None = None, w_con: float = 0.1, w_unl_push: float = 0.1, num_unlabeled_anchors: int = 8, volume_threshold: float = 0.05, max_batches: int = 20) -> float
+        evaluate_val_loss(model: nn.Module, val_loader: DataLoader, device: str, delta_var: float = 0.5, delta_dist: float = 1.5, pmaps_threshold: float = 0.5, sigma: float | None = None, w_con: float = 0.1, w_unl_push: float = 0.1, num_unlabeled_anchors: int = 8, volume_threshold: float = 0.05, max_batches: int = 20, union_target: bool = True) -> float
 
     Objective:
         Compute validation SPOCO loss across a fixed subset of validation batches.
@@ -189,6 +190,8 @@ def evaluate_val_loss(
         num_unlabeled_anchors (int): Max unannotated anchors per volume. Default 8.
         volume_threshold (float): Stopping fraction for unlabeled coverage. Default 0.05.
         max_batches (int): Maximum number of validation batches to evaluate. Default 20.
+        union_target (bool): Passed through to `compute_spoco_total_loss` -- must match the
+            mode training was run under. Default True (see `--target_mode` on this script).
 
     Outputs:
         float: Average validation loss.
@@ -220,6 +223,7 @@ def evaluate_val_loss(
                     num_unlabeled_anchors=num_unlabeled_anchors,
                     volume_threshold=volume_threshold,
                     negative_supervision=True,
+                    union_target=union_target,
                     return_details=False,
                 )
             if torch.isfinite(loss):
@@ -249,6 +253,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--w_con", type=float, default=0.1, help="Consistency loss weight for unlabeled anchors (default: 0.1)")
     parser.add_argument("--w_unl_push", type=float, default=0.1, help="Unlabeled background push loss weight (default: 0.1)")
     parser.add_argument("--max_unlabeled_anchors", type=int, default=8, help="Max unannotated anchors per volume (default: 8)")
+    parser.add_argument(
+        "--target_mode", type=str, default="union", choices=["union", "instance"],
+        help="L_obj Dice target for each sampled annotated anchor (default: union). "
+             "'union' scores every anchor against the FULL finding mask (all instances): the "
+             "official Dice/Hit-Rate metric is finding-level with no instance-matching term, "
+             "so this both removes the false-positive penalty a per-instance target places on "
+             "an anchor bleeding into a different true instance of the same finding (a bleed "
+             "L_con is separately encouraging), and gives every annotated voxel gradient "
+             "regardless of the max_annotated_components cap. 'instance' recovers the original "
+             "per-component Dice target for an explicit ablation against 'union'."
+    )
     parser.add_argument("--volume_threshold", type=float, default=0.05, help="Stopping fraction for uncovered background (default: 0.05)")
     parser.add_argument("--dataset_json", type=str, default=str(DATASET_JSON), help="Path to dataset.json")
     parser.add_argument("--output_dir", type=str, default=str(EXP_LOG_DIR), help="Output directory for checkpoints and logs")
@@ -290,6 +305,7 @@ def main() -> None:
         logger.info(f"Epochs: {args.epochs} | LR: {args.lr} | Alpha (EMA): {args.alpha}")
         logger.info(f"Delta Var: {args.delta_var} | Delta Dist: {args.delta_dist} | Kernel Threshold: {args.kernel_threshold}")
         logger.info(f"W_con: {args.w_con} | W_unl_push: {args.w_unl_push} | Max Anchors: {args.max_unlabeled_anchors}")
+        logger.info(f"L_obj Target Mode: {args.target_mode} (union = scored against full finding mask, no instance-matching term in the official metric)")
         logger.info(f"Metric Embedding Dim: 32 (native decoder width) | Model Dir: {MODEL_DIR}")
         logger.info("=" * 80)
 
@@ -435,6 +451,7 @@ def main() -> None:
                 num_unlabeled_anchors=args.max_unlabeled_anchors,
                 volume_threshold=args.volume_threshold,
                 negative_supervision=True,
+                union_target=(args.target_mode == "union"),
                 return_details=True,
             )
 
@@ -526,6 +543,7 @@ def main() -> None:
                     num_unlabeled_anchors=args.max_unlabeled_anchors,
                     volume_threshold=args.volume_threshold,
                     negative_supervision=True,
+                    union_target=(args.target_mode == "union"),
                     return_details=True,
                 )
 
@@ -581,6 +599,7 @@ def main() -> None:
                 w_unl_push=args.w_unl_push,
                 num_unlabeled_anchors=args.max_unlabeled_anchors,
                 volume_threshold=args.volume_threshold,
+                union_target=(args.target_mode == "union"),
             )
         except Exception as e:
             if rank == 0:

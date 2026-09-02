@@ -18,7 +18,7 @@ At the start of **EVERY SINGLE SESSION**, you MUST immediately load, read, and f
 ## 📜 Knowledge Hierarchy & Authority Protocol
 To prevent hallucinated or outdated AI summaries from superseding ground-truth scientific specifications:
 * **Tier 1 — Highest Authority (Official Publication Papers)**:
-  * Primary literature (*ReXGroundingCT paper — Baharoon et al. 2025*, *VoxTell paper — Luo et al. 2025*, *CT-RATE paper — Hamamci et al. 2024*).
+  * Primary literature (*ReXGroundingCT paper — Baharoon et al. 2025*, *VoxTell paper — Rokuss et al. 2025*, *CT-RATE paper — Hamamci et al. 2024*).
   * Official paper definitions (such as the *Entity Protocol*, dataset curation pipelines, and evaluation metrics) represent immutable ground truth.
 * **Tier 2 — Codebase Contracts & Master Architecture**:
   * `.agents/AGENTS.md`, `.agents/shared/MASTER_PLAN.md`, official dataset schemas (`../data/dataset.json`), and validated evaluator pipelines (`scripts/common/evaluate.py`).

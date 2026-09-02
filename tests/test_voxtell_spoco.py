@@ -222,6 +222,96 @@ def test_spoco_is_absent_flag_skips_out_of_crop_positive():
     assert torch.isfinite(student_embeds.grad).all()
 
 
+def _two_component_target(Z=10, Y=10, X=10):
+    """Shared fixture: a finding with two disjoint 3x3x3 components (27 voxels each) in a
+    small volume, so the Gaussian kernel's background tail (nonzero even at large distance)
+    stays negligible relative to the 27-voxel intersection terms below."""
+    target_mask = torch.zeros((Z, Y, X), dtype=torch.float32)
+    target_mask[1:4, 1:4, 1:4] = 1.0
+    target_mask[6:9, 6:9, 6:9] = 1.0
+    return target_mask
+
+
+def test_union_target_penalizes_missed_sibling_instance():
+    """
+    Two components of the SAME finding embedded far apart (not yet unified into one
+    cluster). Each anchor reconstructs only its own component perfectly, so per-instance
+    Dice against the isolated component (union_target=False) scores near-perfect. But
+    the official metric is scored against the union of BOTH components, so
+    union_target=True must penalize each anchor for missing its sibling instance.
+    """
+    D, Z, Y, X = 8, 10, 10, 10
+    e_bg, e1, e2 = torch.zeros(D), torch.zeros(D), torch.zeros(D)
+    e_bg[2], e1[0], e2[1] = 1.0, 1.0, 1.0  # mutually orthogonal one-hot directions
+
+    target_mask = _two_component_target(Z, Y, X)
+    embeds = e_bg.view(D, 1, 1, 1).expand(D, Z, Y, X).clone()
+    embeds[:, 1:4, 1:4, 1:4] = e1.view(D, 1, 1, 1)
+    embeds[:, 6:9, 6:9, 6:9] = e2.view(D, 1, 1, 1)
+
+    student_embeds = embeds.unsqueeze(0).unsqueeze(0)  # (B=1, N=1, D, Z, Y, X)
+    targets = target_mask.unsqueeze(0).unsqueeze(0)    # (B=1, N=1, Z, Y, X)
+
+    _, l_obj_union, _, _ = compute_spoco_total_loss(
+        student_embeds=student_embeds, teacher_embeds=student_embeds, targets=targets,
+        delta_var=0.5, union_target=True, return_details=True,
+    )
+    _, l_obj_instance, _, _ = compute_spoco_total_loss(
+        student_embeds=student_embeds, teacher_embeds=student_embeds, targets=targets,
+        delta_var=0.5, union_target=False, return_details=True,
+    )
+
+    assert l_obj_instance.item() < 0.1, "Each anchor should reconstruct its own component near-perfectly"
+    assert l_obj_union.item() > l_obj_instance.item() + 0.15, (
+        "Union targeting must penalize an anchor for not covering its sibling instance, "
+        "which per-instance targeting cannot see at all"
+    )
+
+
+def test_union_target_rewards_unified_cluster():
+    """
+    The mirror image: both components of the SAME finding already share one embedding
+    (the metric space has correctly unified them). Per-instance targeting
+    (union_target=False) still penalizes each anchor for 'bleeding' into its sibling
+    component, even though that bleed is a true positive under the official union-mask
+    metric. union_target=True must score this strictly better.
+    """
+    D, Z, Y, X = 8, 10, 10, 10
+    e_bg, e1 = torch.zeros(D), torch.zeros(D)
+    e_bg[2], e1[0] = 1.0, 1.0
+
+    target_mask = _two_component_target(Z, Y, X)
+    embeds = e_bg.view(D, 1, 1, 1).expand(D, Z, Y, X).clone()
+    embeds[:, 1:4, 1:4, 1:4] = e1.view(D, 1, 1, 1)
+    embeds[:, 6:9, 6:9, 6:9] = e1.view(D, 1, 1, 1)  # same embedding as component 1
+
+    student_embeds = embeds.unsqueeze(0).unsqueeze(0)
+    targets = target_mask.unsqueeze(0).unsqueeze(0)
+
+    _, l_obj_union, _, _ = compute_spoco_total_loss(
+        student_embeds=student_embeds, teacher_embeds=student_embeds, targets=targets,
+        delta_var=0.5, union_target=True, return_details=True,
+    )
+    _, l_obj_instance, _, _ = compute_spoco_total_loss(
+        student_embeds=student_embeds, teacher_embeds=student_embeds, targets=targets,
+        delta_var=0.5, union_target=False, return_details=True,
+    )
+
+    assert l_obj_union.item() < l_obj_instance.item() - 0.15, (
+        "A correctly unified cluster covering both true instances of the same finding "
+        "must score better under union targeting than under per-instance targeting, "
+        "which penalizes it as a false positive"
+    )
+
+
+def test_union_target_default_is_true():
+    """Guard against accidental reversion: union targeting is the default, matching the
+    official finding-level (not instance-level) Dice/Hit-Rate evaluation metric."""
+    import inspect
+    sig = inspect.signature(compute_spoco_total_loss)
+    assert sig.parameters["union_target"].default is True
+
+
 def test_clustering_with_candidate_mask():
     """Verify instance mask extraction with optional candidate mask pre-filtering."""
     D, Z, Y, X = 16, 20, 20, 20

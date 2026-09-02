@@ -10,6 +10,9 @@ data/predictions/
 models/
 models/*
 report
+simple_report
+simple_report/
+extra_stuff
 
 # Heavy extensions
 *.nii
@@ -23,6 +26,7 @@ report
 *.tar
 *.tar.gz
 *.zip
+*.tex
 
 submission_*.zip
 

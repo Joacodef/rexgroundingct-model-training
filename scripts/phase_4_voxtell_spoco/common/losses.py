@@ -2,11 +2,14 @@
 ===============================================================================
 MODULE:         3D SPOCO Loss Functions & Anchor Sampling
 LOCATION:       scripts/phase_4_voxtell_spoco/common/losses.py
-OBJECTIVE:      Implement mathematically calibrated Gaussian soft masks,
-                connected-component multi-instance supervision on annotated lesions (L_obj),
-                iterative coverage-suppression consistency on unannotated anchors (L_con),
-                and optional unlabeled background push repulsion (L_unl_push)
-                for SPOCO 3D metric learning (Wolny et al., CVPR 2022).
+OBJECTIVE:      Implement mathematically calibrated Gaussian soft masks, multi-anchor
+                supervision on annotated lesions (L_obj) scored by default against the
+                UNION of all instances of a finding (not per-instance -- ReXGroundingCT's
+                official Dice/Hit-Rate metric is finding-level and carries no instance-
+                matching term, see `union_target` on compute_spoco_total_loss), iterative
+                coverage-suppression consistency on unannotated anchors (L_con), and
+                optional unlabeled background push repulsion (L_unl_push) for SPOCO 3D
+                metric learning (Wolny et al., CVPR 2022).
 ===============================================================================
 """
 
@@ -108,11 +111,17 @@ def sample_annotated_anchors(
     Objective:
         Sample anchor voxels from annotated ground-truth lesion components using 3D
         connected-component decomposition. If a finding contains multiple disjoint lesions,
-        extracts one anchor per component and pairs it with that component's isolated mask.
-        Only the `max_components` largest components are kept: a single micronodule /
-        reticular-thickening crop can hold dozens-to-hundreds of components, and each one
-        adds a full (Z, Y, X) soft mask to the autograd tape downstream, which is a
-        latent OOM.
+        extracts one interior anchor per component (guaranteed inside that component, unlike
+        a naive union-wide median which can land in the gap between two disjoint blobs) and
+        pairs it with that component's isolated mask. The isolated mask returned here is what
+        `max_annotated_components` in `compute_spoco_total_loss` bounds the *count* of; it is
+        NOT necessarily what each anchor's soft mask is later scored against -- under the
+        caller's default `union_target=True`, every returned anchor is instead compared to the
+        finding's full mask, so this cap only bounds how many redundant interior anchors are
+        placed, not how many voxels receive supervision. Only the `max_components` largest
+        components are kept: a single micronodule / reticular-thickening crop can hold
+        dozens-to-hundreds of components, and each one adds a full (Z, Y, X) soft mask to the
+        autograd tape downstream, which is a latent OOM.
 
     Inputs:
         target_mask (torch.Tensor): Binary target tensor of shape (Z, Y, X).
@@ -328,11 +337,12 @@ def compute_spoco_total_loss(
     negative_supervision: bool = True,
     max_annotated_components: int = 8,
     roi_dilation_voxels: int = 2,
+    union_target: bool = True,
     return_details: bool = False,
 ) -> Any:
     """
     Signature:
-        compute_spoco_total_loss(student_embeds: torch.Tensor, teacher_embeds: torch.Tensor, targets: torch.Tensor, is_absent: torch.Tensor | None = None, delta_var: float = 0.5, delta_dist: float = 1.5, pmaps_threshold: float = 0.5, sigma: float | None = None, w_con: float = 0.1, w_unl_push: float = 0.1, num_unlabeled_anchors: int = 8, volume_threshold: float = 0.05, negative_supervision: bool = True, max_annotated_components: int = 8, roi_dilation_voxels: int = 2, return_details: bool = False) -> tuple
+        compute_spoco_total_loss(student_embeds: torch.Tensor, teacher_embeds: torch.Tensor, targets: torch.Tensor, is_absent: torch.Tensor | None = None, delta_var: float = 0.5, delta_dist: float = 1.5, pmaps_threshold: float = 0.5, sigma: float | None = None, w_con: float = 0.1, w_unl_push: float = 0.1, num_unlabeled_anchors: int = 8, volume_threshold: float = 0.05, negative_supervision: bool = True, max_annotated_components: int = 8, roi_dilation_voxels: int = 2, union_target: bool = True, return_details: bool = False) -> tuple
 
     Objective:
         Compute full 3D SPOCO loss: Instance-level soft Dice on annotated objects (L_obj),
@@ -362,10 +372,28 @@ def compute_spoco_total_loss(
         num_unlabeled_anchors (int): Maximum unlabeled anchors sampled per finding (default 8).
         volume_threshold (float): Stopping fraction for unlabeled coverage (default 0.05).
         negative_supervision (bool): Penalize false-positive anchor masks on absent findings (default True).
-        max_annotated_components (int): Cap on connected components supervised per finding,
-            largest first (default 8); bounds autograd-tape memory on multi-focal crops.
+        max_annotated_components (int): Cap on connected components used for anchor *placement*
+            per finding, largest first (default 8); bounds autograd-tape memory on multi-focal
+            crops. Under `union_target=True` this no longer caps how many voxels receive
+            supervision (every anchor is scored against the full finding mask), only how many
+            redundant interior anchors are placed.
         roi_dilation_voxels (int): Lesion-band dilation (voxels) excluded from the push and
             unannotated-anchor "confirmed background" pools (default 2, 0 disables).
+        union_target (bool): ReXGroundingCT's official evaluation is per-finding volumetric
+            Dice/Hit-Rate against the union of all instances of that finding -- it carries no
+            instance-matching term, so nothing in the challenge rewards telling instance 3 apart
+            from instance 7 of the same pathology. When True (default), every sampled annotated
+            anchor's Dice term is evaluated against the finding's full target mask (all
+            components), not just its own isolated component: this (a) removes the false-positive
+            penalty L_obj previously placed on an anchor's soft mask bleeding into a *different*
+            true instance of the same finding -- a bleed that L_con is separately trying to
+            encourage -- and (b) fixes a real coverage gap, since `max_annotated_components`
+            previously left every component beyond the cap with zero gradient of either kind
+            (too small for direct supervision, yet excluded from the unlabeled pool because it is
+            genuinely annotated); categories such as micronodules (mean 12.14 components/finding)
+            and septal thickening (7.82) already exceed the cap of 8 routinely. Set False to
+            recover the original per-instance behavior (each anchor's Dice scored only against
+            its own connected component) for an explicit instance-vs-union ablation.
         return_details (bool): If True, returns (total_loss, l_obj, l_con, l_push). Otherwise (total_loss, l_obj, l_con).
 
     Outputs:
@@ -416,7 +444,13 @@ def compute_spoco_total_loss(
                     )  # (K, Z, Y, X)
 
                     for k in range(len(annotated_items)):
-                        l_dice = compute_instance_dice_loss(soft_masks[k], comp_masks[k])
+                        # Union targeting (default): every anchor's soft mask is scored against
+                        # the WHOLE finding mask (tgt), not just the component it was seeded
+                        # from, so a bleed into a different true instance of the same finding
+                        # is rewarded rather than penalized, and every annotated voxel gets
+                        # gradient regardless of the max_annotated_components cap above.
+                        dice_target = tgt if union_target else comp_masks[k]
+                        l_dice = compute_instance_dice_loss(soft_masks[k], dice_target)
                         loss_obj_list.append(l_dice)
 
                     # 2. Unlabeled Push Repulsion Force: push annotated anchors away from background

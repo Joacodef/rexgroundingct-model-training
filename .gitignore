@@ -9,6 +9,7 @@ data/preprocessed/
 data/predictions/
 models/
 models/*
+report
 
 # Heavy extensions
 *.nii

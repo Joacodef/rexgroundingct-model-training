@@ -229,7 +229,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--embedding_dim", type=int, default=32, help="Metric embedding dimension D (default: 32)")
     parser.add_argument("--dataset_json", type=str, default=str(DATASET_JSON), help="Path to dataset.json")
     parser.add_argument("--output_dir", type=str, default=str(EXP_LOG_DIR), help="Output directory for checkpoints and logs")
-    parser.add_argument("--use_volume_cache", action="store_true", default=True, help="Enable fast SSD volume caching in /tmp")
+    parser.add_argument("--resume", action="store_true", help="Resume training from latest_model.pt in output_dir")
+    parser.add_argument(
+        "--use_volume_cache",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable fast volume caching (default: False, streams directly from NVMe)",
+    )
     parser.add_argument("--num_workers", type=int, default=None, help="DataLoader worker count (None for server-agnostic auto)")
     parser.add_argument("--dry_run", action="store_true", help="Execute single-batch verification step")
     parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases telemetry logging")
@@ -431,8 +437,22 @@ def main() -> None:
     # 5. Multi-Epoch Training Loop
     best_val_loss = float("inf")
     total_steps = 0
+    start_epoch = 1
 
-    for epoch in range(1, args.epochs + 1):
+    latest_model_path = output_dir / "latest_model.pt"
+    if args.resume and latest_model_path.exists():
+        if rank == 0:
+            logger.info(f"Resuming training from checkpoint: {latest_model_path}")
+        checkpoint = torch.load(latest_model_path, map_location=device)
+        student_model.load_state_dict(checkpoint["student_state_dict"])
+        teacher_model.load_state_dict(checkpoint["teacher_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = checkpoint["epoch"] + 1
+        best_val_loss = checkpoint.get("best_val_loss", checkpoint.get("val_loss", float("inf")))
+        if rank == 0:
+            logger.info(f"Successfully resumed at Epoch {start_epoch}, previous best val loss: {best_val_loss:.4f}")
+
+    for epoch in range(start_epoch, args.epochs + 1):
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
@@ -574,6 +594,22 @@ def main() -> None:
                     },
                     epoch_ckpt_path,
                 )
+
+            # Always save latest_model.pt for robust checkpointing / auto-resume
+            latest_ckpt_path = output_dir / "latest_model.pt"
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "student_state_dict": get_unwrapped_state_dict(student_model),
+                    "teacher_state_dict": teacher_model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_loss": val_loss,
+                    "best_val_loss": best_val_loss,
+                    "args": vars(args),
+                },
+                latest_ckpt_path,
+            )
+            logger.info(f"Updated latest checkpoint: {latest_ckpt_path}")
 
     if rank == 0:
         logger.info(f"Phase 4 Exp 001 Training Completed across {args.epochs} epochs. Best Val Loss: {best_val_loss:.4f}")

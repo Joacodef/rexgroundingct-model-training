@@ -3,9 +3,18 @@
 SCRIPT:         VoxTell Multi-Planar Projection Regularization (MPR) Fine-Tuning
 PHASE:          Phase 3 — Model Fine-Tuning & Loss Hypotheses Benchmarking
 LOCATION:       scripts/phase_3_voxtell_finetuning/exp_003_mpr_loss.py
-OBJECTIVE:      Fine-tune VoxTell using 3D Multi-Planar Projection Regularization (MPR) 
-                consistency loss with exponential ramp-up. Builds on the Student-Teacher 
-                Mean Teacher framework of Exp 002, but replaces 3D voxel-wise MSE with 
+OBJECTIVE:      Fine-tune VoxTell using 3D Multi-Planar Projection Regularization (MPR)
+                consistency loss with exponential ramp-up. Builds on the Student-Teacher
+                Mean Teacher framework of Exp 002, but replaces the 3D voxel-wise MSE
+                consistency term with the MPR loss of Gao et al., 2022 (SOUSA): for each
+                of Nrot random 3D rotations, the unannotated-background predictions of the
+                Student and Teacher are max-projected onto the axial, coronal and sagittal
+                planes and compared with a soft Dice loss, then averaged over rotations.
+                Max-projection turns a small dispersed false positive into an isolated 2D
+                peak that Dice penalises strongly, whereas the same voxel is nearly
+                invisible to a 3D MSE — the failure mode expected under partial annotation.
+USAGE:          Single-GPU: python scripts/phase_3_voxtell_finetuning/exp_003_mpr_loss.py
+                Multi-GPU:  torchrun --nproc_per_node=N scripts/phase_3_voxtell_finetuning/exp_003_mpr_loss.py
 ===============================================================================
 """
 
@@ -116,43 +125,146 @@ def compute_roi_masked_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mas
 
 
 
-def compute_mpr_consistency_loss(student_probs: torch.Tensor, teacher_probs: torch.Tensor, roi_mask: torch.Tensor) -> torch.Tensor:
+def _random_rotation_matrix(device: torch.device, generator: torch.Generator | None = None) -> torch.Tensor:
     """
     Signature:
-        compute_mpr_consistency_loss(student_probs: torch.Tensor, teacher_probs: torch.Tensor, roi_mask: torch.Tensor) -> torch.Tensor
+        _random_rotation_matrix(device: torch.device, generator: torch.Generator) -> torch.Tensor
 
     Objective:
-        Compute 3D Multi-Planar Projection (MPR) consistency loss across unannotated background voxels.
-        Applies 2D max-intensity projections along Axial (Z), Coronal (Y), and Sagittal (X) planes to compute
-        projection MSE against the Teacher, heavily penalizing dispersed false positive noise while bypassing 
-        3D volume dilution (Gao et al., 2022).
+        Draw a uniformly random 3D rotation as a 3x3 matrix, built from a random unit axis and an
+        angle sampled uniformly in [-pi, pi] (Rodrigues' formula). Used to rotate the background
+        prediction volumes before max-projection in the MPR consistency loss (Gao et al., 2022).
 
     Inputs:
+        device (torch.device): Device on which to allocate the matrix.
+        generator (torch.Generator): Optional RNG for reproducibility. Default None (global RNG).
 
     Outputs:
-        torch.Tensor: Scalar MPR consistency loss averaged across the 3 orthogonal projection planes.
+        torch.Tensor: Rotation matrix of shape (3, 3), float32.
+    """
+    axis = torch.randn(3, device=device, dtype=torch.float32, generator=generator)
+    axis = axis / (axis.norm() + 1e-8)
+    angle = (torch.rand(1, device=device, dtype=torch.float32, generator=generator) * 2.0 - 1.0) * math.pi
+    x, y, z = axis[0], axis[1], axis[2]
+    c = torch.cos(angle).squeeze()
+    s = torch.sin(angle).squeeze()
+    C = 1.0 - c
+    rot = torch.stack([
+        torch.stack([c + x * x * C,     x * y * C - z * s, x * z * C + y * s]),
+        torch.stack([y * x * C + z * s, c + y * y * C,     y * z * C - x * s]),
+        torch.stack([z * x * C - y * s, z * y * C + x * s, c + z * z * C]),
+    ])
+    return rot
+
+
+def _rotate_volume(vol: torch.Tensor, rot: torch.Tensor) -> torch.Tensor:
+    """
+    Signature:
+        _rotate_volume(vol: torch.Tensor, rot: torch.Tensor) -> torch.Tensor
+
+    Objective:
+        Apply an arbitrary 3D rotation to a (B, F, Z, Y, X) volume via trilinear grid sampling,
+        keeping the output grid identical to the input grid (out-of-volume samples padded with zeros).
+        Computed in float32 for numerical stability under bf16 autocast.
+
+    Inputs:
+        vol (torch.Tensor): Volume tensor of shape (B, F, Z, Y, X).
+        rot (torch.Tensor): Rotation matrix of shape (3, 3).
+
+    Outputs:
+        torch.Tensor: Rotated volume, same shape and dtype as the float32-cast input.
+    """
+    b = vol.shape[0]
+    theta = torch.zeros(b, 3, 4, device=vol.device, dtype=torch.float32)
+    theta[:, :3, :3] = rot.to(torch.float32).unsqueeze(0).expand(b, -1, -1)
+    grid = F.affine_grid(theta, list(vol.shape), align_corners=False)
+    return F.grid_sample(vol.float(), grid, mode='bilinear', padding_mode='zeros', align_corners=False)
+
+
+def _triplanar_projection_loss(bg_student: torch.Tensor, bg_teacher: torch.Tensor, projection_loss: str) -> torch.Tensor:
+    """
+    Signature:
+        _triplanar_projection_loss(bg_student: torch.Tensor, bg_teacher: torch.Tensor, projection_loss: str) -> torch.Tensor
+
+    Objective:
+        Max-project the (masked) Student and Teacher background predictions onto the axial (Z),
+        coronal (Y) and sagittal (X) planes and compare the projections, averaging the three planes.
+        The Teacher projections are detached (no gradient flows into the EMA network).
+
+    Inputs:
+        bg_student (torch.Tensor): Student background prediction (B, F, Z, Y, X), gradient-carrying.
+        bg_teacher (torch.Tensor): Teacher background prediction (B, F, Z, Y, X).
+        projection_loss (str): 'dice' for soft Dice between projections (Gao et al., 2022), or 'mse'.
+
+    Outputs:
+        torch.Tensor: Scalar loss averaged over the 3 orthogonal projection planes.
+    """
+    total = bg_student.new_zeros(())
+    for dim in (2, 3, 4):
+        p_s = torch.max(bg_student, dim=dim)[0].float()
+        p_t = torch.max(bg_teacher, dim=dim)[0].float().detach()
+        if projection_loss == "mse":
+            total = total + F.mse_loss(p_s, p_t)
+        else:
+            intersection = (p_s * p_t).sum()
+            denom = p_s.sum() + p_t.sum()
+            total = total + (1.0 - (2.0 * intersection + 1e-6) / (denom + 1e-6))
+    return total / 3.0
+
+
+def compute_mpr_consistency_loss(
+    student_probs: torch.Tensor,
+    teacher_probs: torch.Tensor,
+    roi_mask: torch.Tensor,
+    num_rotations: int = 4,
+    rotation_mode: str = "affine",
+    projection_loss: str = "dice",
+) -> torch.Tensor:
+    """
+    Signature:
+        compute_mpr_consistency_loss(student_probs: torch.Tensor, teacher_probs: torch.Tensor, roi_mask: torch.Tensor, num_rotations: int, rotation_mode: str, projection_loss: str) -> torch.Tensor
+
+    Objective:
+        Compute the Multi-Planar Projection (MPR) consistency loss of Gao et al., 2022 across the
+        unannotated background region. For rotation 0 (identity) and each of the remaining
+        num_rotations - 1 random 3D rotations, the masked Student and Teacher predictions are
+        max-projected onto the axial, coronal and sagittal planes and compared (soft Dice by
+        default); the per-rotation losses are averaged. Rotations turn dispersed false positives
+        into isolated 2D peaks that projection Dice penalises strongly, unlike a 3D voxel-wise MSE.
+
+    Inputs:
+        student_probs (torch.Tensor): Student sigmoid probabilities (B, F, Z, Y, X), gradient-carrying.
+        teacher_probs (torch.Tensor): Teacher sigmoid probabilities (B, F, Z, Y, X).
+        roi_mask (torch.Tensor): Dilated boolean ROI mask (B, F, Z, Y, X); its complement is the
+            unannotated background over which the loss is computed.
+        num_rotations (int): Total projections including the identity. 1 reproduces the plain
+            axis-aligned tri-planar loss. Default 4. Gao et al. report an optimum around 9.
+        rotation_mode (str): 'affine' for arbitrary-angle trilinear rotation, 'none' for identity only.
+        projection_loss (str): 'dice' (Gao et al., 2022) or 'mse'.
+
+    Outputs:
+        torch.Tensor: Scalar MPR consistency loss.
     """
     dtype = student_probs.dtype
-    # Isolate unannotated background region
     bg_mask = (~roi_mask).to(dtype=dtype)
     bg_student = student_probs * bg_mask
-    bg_teacher = teacher_probs * bg_mask
-    
-    # 2D Max projections along Axial (dim 2, Z), Coronal (dim 3, Y), and Sagittal (dim 4, X)
-    p_axial_s = torch.max(bg_student, dim=2)[0]
-    p_coronal_s = torch.max(bg_student, dim=3)[0]
-    p_sagittal_s = torch.max(bg_student, dim=4)[0]
-    
-    p_axial_t = torch.max(bg_teacher, dim=2)[0]
-    p_coronal_t = torch.max(bg_teacher, dim=3)[0]
-    p_sagittal_t = torch.max(bg_teacher, dim=4)[0]
-    
-    # Compute MSE across 2D multi-planar projections in float32
-    loss_axial = F.mse_loss(p_axial_s.float(), p_axial_t.float())
-    loss_coronal = F.mse_loss(p_coronal_s.float(), p_coronal_t.float())
-    loss_sagittal = F.mse_loss(p_sagittal_s.float(), p_sagittal_t.float())
-    
-    return (loss_axial + loss_coronal + loss_sagittal) / 3.0
+    bg_teacher = (teacher_probs * bg_mask).detach()
+
+    n_rot = max(1, int(num_rotations))
+    total = bg_student.new_zeros(())
+    # Rotation 0 is always the identity so the loss degrades gracefully to the axis-aligned
+    # tri-planar projection when num_rotations == 1 or rotation_mode == 'none'.
+    total = total + _triplanar_projection_loss(bg_student, bg_teacher, projection_loss)
+
+    if rotation_mode == "affine":
+        for _ in range(n_rot - 1):
+            rot = _random_rotation_matrix(bg_student.device)
+            rot_student = _rotate_volume(bg_student, rot).to(dtype=dtype)
+            rot_teacher = _rotate_volume(bg_teacher, rot).to(dtype=dtype)
+            total = total + _triplanar_projection_loss(rot_student, rot_teacher, projection_loss)
+        return total / float(n_rot)
+
+    return total
 
 
 def get_mpr_rampup_weight(epoch: int, max_epochs: int, max_weight: float = 0.5) -> float:
@@ -234,7 +346,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alpha", type=float, default=0.999, help="Teacher EMA momentum decay parameter (default: 0.999)")
     parser.add_argument("--pos_weight", type=float, default=10.0, help="Positive class weight for BCE loss inside ROIs (default: 10.0)")
     parser.add_argument("--max_mpr_weight", type=float, default=0.5, help="Maximum MPR consistency loss weight (default: 0.5)")
+    parser.add_argument("--mpr_num_rotations", type=int, default=4, help="Number of MPR projections incl. identity; 1 = plain axis-aligned tri-planar (default: 4, Gao et al. optimum ~9)")
+    parser.add_argument("--mpr_rotation_mode", type=str, default="affine", choices=["affine", "none"], help="MPR rotation sampling: 'affine' arbitrary-angle trilinear, 'none' identity only (default: affine)")
+    parser.add_argument("--mpr_projection_loss", type=str, default="dice", choices=["dice", "mse"], help="Loss between Student/Teacher 2D projections (default: dice, per Gao et al. 2022)")
     parser.add_argument("--patch_size", type=int, default=192, help="Patch size for MONAI spatial crop (default: 192)")
+    parser.add_argument("--num_pos_prompts", type=int, default=2, help="Number of positive prompts per volume (default: 2)")
+    parser.add_argument("--num_neg_prompts", type=int, default=1, help="Number of negative prompts per volume (default: 1)")
+    parser.add_argument("--pos_ratio", type=float, default=0.85, help="Foreground patch sampling probability (default: 0.85)")
     parser.add_argument("--device", type=str, default="cuda:0", help="Computation device for standalone run (e.g. cuda:0)")
     parser.add_argument("--num_workers", type=int, default=None, help="Number of DataLoader workers per GPU (default: auto-resolved based on SLURM / CPU count)")
     parser.add_argument("--use_volume_cache", action="store_true", default=False, help="Enable on-disk full-volume caching (default: False, streaming mode)")
@@ -256,6 +374,9 @@ def train_mpr_epoch(
     w_mpr: float,
     pos_weight: float,
     alpha: float,
+    mpr_num_rotations: int = 4,
+    mpr_rotation_mode: str = "affine",
+    mpr_projection_loss: str = "dice",
     global_step: int = 0,
     rank: int = 0,
     world_size: int = 1,
@@ -263,7 +384,7 @@ def train_mpr_epoch(
 ) -> tuple[float, float, float, int]:
     """
     Signature:
-        train_mpr_epoch(student_model: nn.Module, teacher_model: nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, device: str, w_mpr: float, pos_weight: float, alpha: float, global_step: int, rank: int, world_size: int, is_distributed: bool) -> tuple[float, float, float, int]
+        train_mpr_epoch(student_model: nn.Module, teacher_model: nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, device: str, w_mpr: float, pos_weight: float, alpha: float, mpr_num_rotations: int, mpr_rotation_mode: str, mpr_projection_loss: str, global_step: int, rank: int, world_size: int, is_distributed: bool) -> tuple[float, float, float, int]
 
     Objective:
         Execute one training epoch using PU dilated ROI masked supervision + 3D Multi-Planar Projection (MPR) consistency with DDP synchronization.
@@ -278,6 +399,9 @@ def train_mpr_epoch(
         w_mpr (float): MPR consistency loss ramp-up weight for current epoch.
         pos_weight (float): Positive class weight for BCE loss inside ROIs.
         alpha (float): EMA decay weighting factor for Teacher model update.
+        mpr_num_rotations (int): Number of MPR projections including the identity. Default 4.
+        mpr_rotation_mode (str): 'affine' or 'none'. Default 'affine'.
+        mpr_projection_loss (str): 'dice' or 'mse'. Default 'dice'.
         global_step (int): Running global iteration counter across epochs. Default 0.
         rank (int): Process global rank. Default 0.
         world_size (int): Total number of distributed processes. Default 1.
@@ -322,7 +446,12 @@ def train_mpr_epoch(
             loss_sup = compute_roi_masked_loss(student_logits.float(), targets.float(), roi_mask, pos_weight=pos_weight)
             
             # 3D Multi-Planar Projection (MPR) consistency loss across unannotated background voxels
-            loss_mpr = compute_mpr_consistency_loss(student_probs.float(), teacher_probs.float(), roi_mask)
+            loss_mpr = compute_mpr_consistency_loss(
+                student_probs.float(), teacher_probs.float(), roi_mask,
+                num_rotations=mpr_num_rotations,
+                rotation_mode=mpr_rotation_mode,
+                projection_loss=mpr_projection_loss,
+            )
             
             # Combined total loss
             total_loss = loss_sup + w_mpr * loss_mpr
@@ -398,6 +527,8 @@ def main() -> None:
     logger.info("Starting VoxTell MPR Fine-Tuning Pipeline (Exp 003)...")
     logger.info(f"Execution Mode: {'Distributed (DDP)' if is_distributed else 'Single-Device'} | Rank: {rank}/{world_size} | Device: {target_device}")
     logger.info(f"Epochs: {args.epochs}, LR: {args.lr}, Alpha: {args.alpha}, PosWeight: {args.pos_weight}, MaxMPRWeight: {args.max_mpr_weight}")
+    logger.info(f"Prompts: {args.num_pos_prompts} Pos + {args.num_neg_prompts} Neg | Foreground Ratio: {args.pos_ratio}")
+    logger.info(f"MPR: rotations={args.mpr_num_rotations}, mode={args.mpr_rotation_mode}, projection_loss={args.mpr_projection_loss}")
     
     output_dir = Path(args.output_dir)
     if rank == 0:
@@ -420,6 +551,9 @@ def main() -> None:
             cache_dir=args.cache_dir,
             is_train=True,
             patch_size=args.patch_size,
+            num_positive_prompts=args.num_pos_prompts,
+            num_negative_prompts=args.num_neg_prompts,
+            pos_ratio=args.pos_ratio,
             use_volume_cache=args.use_volume_cache
         )
         
@@ -534,6 +668,9 @@ def main() -> None:
                 w_mpr=w_mpr,
                 pos_weight=args.pos_weight,
                 alpha=args.alpha,
+                mpr_num_rotations=args.mpr_num_rotations,
+                mpr_rotation_mode=args.mpr_rotation_mode,
+                mpr_projection_loss=args.mpr_projection_loss,
                 global_step=global_step,
                 rank=rank,
                 world_size=world_size,

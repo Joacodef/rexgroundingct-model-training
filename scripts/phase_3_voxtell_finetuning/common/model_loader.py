@@ -71,7 +71,13 @@ def load_voxtell_model(model_dir: str, device: str, deep_supervision: bool = Tru
         logger.info(f"Loading pre-trained VoxTell weights from {ckpt_path}")
         checkpoint_data = torch.load(ckpt_path, map_location=device, weights_only=False)
         state_dict = checkpoint_data.get("network_weights", checkpoint_data.get("model", checkpoint_data))
-        model.load_state_dict(state_dict, strict=False)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing:
+            logger.warning(f"{len(missing)} missing key(s) not found in checkpoint (kept at init): {missing[:8]}{' ...' if len(missing) > 8 else ''}")
+        if unexpected:
+            logger.warning(f"{len(unexpected)} unexpected key(s) in checkpoint (ignored): {unexpected[:8]}{' ...' if len(unexpected) > 8 else ''}")
+        if not missing and not unexpected:
+            logger.info("Pre-trained VoxTell weights loaded with full key alignment (missing: 0, unexpected: 0).")
     else:
         logger.warning(f"Pre-trained checkpoint not found at {ckpt_path}. Initializing from scratch.")
         

@@ -220,6 +220,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_consistency_weight", type=float, default=0.5, help="Maximum consistency loss weight (default: 0.5)")
     parser.add_argument("--consistency_warmup", type=int, default=15, help="Number of warmup epochs for consistency loss (default: 15)")
     parser.add_argument("--patch_size", type=int, default=192, help="Patch size for MONAI spatial crop (default: 192)")
+    parser.add_argument("--num_pos_prompts", type=int, default=2, help="Number of positive prompts per volume (default: 2)")
+    parser.add_argument("--num_neg_prompts", type=int, default=1, help="Number of negative prompts per volume (default: 1)")
+    parser.add_argument("--pos_ratio", type=float, default=0.85, help="Foreground patch sampling probability (default: 0.85)")
     parser.add_argument("--device", type=str, default="cuda:0", help="Computation device for standalone run (e.g. cuda:0)")
     parser.add_argument("--num_workers", type=int, default=None, help="Number of DataLoader workers per GPU (default: auto-resolved based on SLURM / CPU count)")
     parser.add_argument("--use_volume_cache", action="store_true", default=False, help="Enable on-disk full-volume caching (default: False, streaming mode)")
@@ -383,6 +386,7 @@ def main() -> None:
     logger.info("Starting VoxTell PU Mean Teacher Fine-Tuning Pipeline (Exp 002)...")
     logger.info(f"Execution Mode: {'Distributed (DDP)' if is_distributed else 'Single-Device'} | Rank: {rank}/{world_size} | Device: {target_device}")
     logger.info(f"Epochs: {args.epochs}, LR: {args.lr}, Alpha: {args.alpha}, PosWeight: {args.pos_weight}, PatchSize: {args.patch_size}")
+    logger.info(f"Prompts: {args.num_pos_prompts} Pos + {args.num_neg_prompts} Neg | Foreground Ratio: {args.pos_ratio}")
     
     output_dir = Path(args.output_dir)
     if rank == 0:
@@ -405,6 +409,9 @@ def main() -> None:
             cache_dir=args.cache_dir,
             is_train=True,
             patch_size=args.patch_size,
+            num_positive_prompts=args.num_pos_prompts,
+            num_negative_prompts=args.num_neg_prompts,
+            pos_ratio=args.pos_ratio,
             use_volume_cache=args.use_volume_cache
         )
         

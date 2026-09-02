@@ -209,10 +209,11 @@ def compute_unlabeled_push_loss(
     instance_anchors: List[Tuple[int, int, int]],
     target_mask: torch.Tensor,
     delta_dist: float = 1.5,
+    max_bg_samples: int = 10000,
 ) -> torch.Tensor:
     """
     Signature:
-        compute_unlabeled_push_loss(embeddings: torch.Tensor, instance_anchors: list[tuple[int, int, int]], target_mask: torch.Tensor, delta_dist: float = 1.5) -> torch.Tensor
+        compute_unlabeled_push_loss(embeddings: torch.Tensor, instance_anchors: list[tuple[int, int, int]], target_mask: torch.Tensor, delta_dist: float = 1.5, max_bg_samples: int = 10000) -> torch.Tensor
 
     Objective:
         Compute hinge repulsion push force between annotated instance anchors and
@@ -224,6 +225,8 @@ def compute_unlabeled_push_loss(
         instance_anchors (list[tuple[int, int, int]]): Anchor coordinates of annotated instances.
         target_mask (torch.Tensor): Binary target tensor of shape (Z, Y, X).
         delta_dist (float): Inter-cluster push distance margin (default 1.5).
+        max_bg_samples (int): Maximum background voxels to sample for the Monte Carlo
+            approximation of the background expectation (default 10000).
 
     Outputs:
         torch.Tensor: Scalar unlabeled push loss.
@@ -232,18 +235,37 @@ def compute_unlabeled_push_loss(
         return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
 
     bg_mask = (target_mask <= 0.5)
-    num_bg = bg_mask.sum().float()
+    bg_indices = torch.nonzero(bg_mask, as_tuple=False)  # (N_bg, 3)
+    num_bg = bg_indices.shape[0]
     if num_bg == 0:
         return torch.tensor(0.0, device=embeddings.device, requires_grad=True)
+
+    # Algorithmic & Volumetric Rationale:
+    # A standard 3D volumetric patch (e.g. 192x192x192) contains over 7 million voxels.
+    # Performing full-grid dense tensor broadcasting across all background voxels for every
+    # anchor accumulates O(|BG| * K) uncompressed 3D activation maps in the autograd backward tape,
+    # causing rapid memory scaling on multi-instance scans.
+    # We apply standard Monte Carlo subsampling of background voxels (default 10,000):
+    #   E_{i ~ BG}[hinge(delta_dist - ||e_i - a_k||)^2] ~= (1 / N) * sum_{j=1}^N hinge(delta_dist - ||e_j - a_k||)^2
+    # This yields an unbiased estimator with identical expected gradient dynamics while reducing
+    # intermediate autograd graph memory by several orders of magnitude.
+    if num_bg > max_bg_samples:
+        perm = torch.randperm(num_bg, device=embeddings.device)[:max_bg_samples]
+        sampled_indices = bg_indices[perm]  # (S, 3)
+    else:
+        sampled_indices = bg_indices
+
+    # Gather sampled background embedding vectors: (D, S)
+    sz, sy, sx = sampled_indices[:, 0], sampled_indices[:, 1], sampled_indices[:, 2]
+    bg_embeds = embeddings[:, sz, sy, sx]  # (D, S)
 
     push_losses = []
     for az, ay, ax in instance_anchors:
         anchor_vec = embeddings[:, az, ay, ax]  # (D,)
-        dot_prod = torch.einsum("d, dzyx -> zyx", anchor_vec, embeddings)
-        dist = torch.sqrt(torch.clamp(2.0 - 2.0 * dot_prod, min=1e-8))
-        hinged_push = torch.clamp(delta_dist - dist, min=0.0) ** 2
-        push_loss = (hinged_push * bg_mask.float()).sum() / (num_bg + 1e-6)
-        push_losses.append(push_loss)
+        dot_prod = torch.einsum("d, ds -> s", anchor_vec, bg_embeds)  # (S,)
+        dist = torch.sqrt(torch.clamp(2.0 - 2.0 * dot_prod, min=1e-8))  # (S,)
+        hinged_push = torch.clamp(delta_dist - dist, min=0.0) ** 2  # (S,)
+        push_losses.append(hinged_push.mean())
 
     return torch.stack(push_losses).mean()
 

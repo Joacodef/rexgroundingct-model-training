@@ -103,8 +103,12 @@ def precompute_embeddings(
     comp_device = torch.device(device if torch.cuda.is_available() else "cpu")
     logger.info(f"Loading text encoder '{model_name}' onto {comp_device}...")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=str(HF_HOME) if HF_HOME else None)
-    text_backbone = AutoModel.from_pretrained(model_name, cache_dir=str(HF_HOME) if HF_HOME else None).to(comp_device)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+        text_backbone = AutoModel.from_pretrained(model_name, local_files_only=True).to(comp_device)
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=str(HF_HOME) if HF_HOME else None)
+        text_backbone = AutoModel.from_pretrained(model_name, cache_dir=str(HF_HOME) if HF_HOME else None).to(comp_device)
     text_backbone.eval()
 
     # Determine unique prompts across all scans to avoid redundant computation

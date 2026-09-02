@@ -84,7 +84,7 @@ Run automated unit and integration test suites:
 .venv/bin/python -m pytest tests/test_orientation.py -q      # spatial engine (14 tests)
 .venv/bin/python -m pytest tests/test_prior_engine.py -q     # Phase 2A prior engine (8 tests)
 .venv/bin/python -m pytest tests/test_mpr_loss.py -q         # Phase 3 Exp 003 MPR loss (7 tests)
-.venv/bin/python -m pytest tests/test_voxtell_spoco.py -q    # Phase 4 SPOCO (7 tests)
+.venv/bin/python -m pytest tests/test_voxtell_spoco.py -q    # Phase 4 SPOCO (8 tests)
 ```
 
 > [!NOTE]
@@ -141,6 +141,32 @@ tail -f logs/phase_3_voxtell_finetuning/exp_003_mpr_loss/run.log
 
 # SLURM stdout/stderr for a given job id:
 tail -f logs/phase_3_voxtell_finetuning/exp_003_mpr_loss/slurm_<job_id>.out
+```
+
+### 5. VoxTell-SPOCO Metric Learning (Phase 4)
+
+Metric-embedding fine-tuning on the unit hypersphere (S³¹) with SPOCO losses.
+
+```bash
+# Train (Exp 001 canonical baseline):
+sbatch bash_scripts/train_exp_001_spoco.slurm
+
+# Evaluate a checkpoint on the val split (sliding-window inference -> logit-seeded
+# soft-mask instances -> scripts/common/evaluate.py). Override CKPT if needed:
+sbatch bash_scripts/eval_exp_001_spoco.slurm
+sbatch --export=ALL,CKPT=<path/to/checkpoint.pt> bash_scripts/eval_exp_001_spoco.slurm
+
+# Inference only (no scoring):
+.venv/bin/python scripts/phase_4_voxtell_spoco/exp_001_voxtell_spoco_inference.py \
+  --split val --checkpoint logs/phase_4_voxtell_spoco/exp_001_voxtell_spoco/latest_model.pt \
+  --output_dir <pred_dir>
+```
+
+Progress and results:
+```bash
+tail -f logs/phase_4_voxtell_spoco/exp_001_voxtell_spoco/run.log
+cat  logs/phase_4_voxtell_spoco/exp_001_voxtell_spoco/eval.md            # metrics log
+cat  logs/phase_4_voxtell_spoco/exp_001_voxtell_spoco/eval_results_val.json
 ```
 
 ---

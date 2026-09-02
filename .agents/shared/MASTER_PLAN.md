@@ -53,7 +53,7 @@
   * **Targeted Loss Benchmarking**: Evaluate 3 specific loss strategies to address sparse-to-exhaustive annotation disparity on VoxTell:
     * **Exp 001**: Naïve Supervised Baseline (BCE + Dice).
     * **Exp 002**: Positive-Unlabeled (PU) Mean Teacher Loss.
-    * **Exp 003**: Multi-Planar Projection Regularization (MPR) Loss.
+    * **Exp 003**: Multi-Planar Projection Regularization (MPR) Loss *(Delegated to `peteroa` production cluster for multi-GPU batch throughput)*.
   * **Fast Volume Acceleration**: Execute training using fast local SSD volume caching.
 
 * **Key Deliverables**:
@@ -65,7 +65,7 @@
 ### Phase 4: Metric Learning and Voxel Embeddings via VoxTell-SPOCO
 * **Core Research Scope**:
   * **Metric-Learning & Continuous Hypersphere Exploration**: Adapt the VoxTell vision-language foundation model for continuous metric representation learning on a 32D unit hypersphere ($\mathbb{S}^{31}$) via Sparse Object-Level Consistency (SPOCO, Wolny et al., CVPR 2022) to resolve the sparse-to-exhaustive annotation gap and false-negative penalties across four structured experiments:
-    * **Exp 001: Canonical SPOCO Foundation Baseline**: Full fine-tuning baseline directly leveraging VoxTell's native 32-channel decoder feature map with single-anchor connected-component supervision ($L_{\text{obj}}$), unannotated iterative coverage suppression consistency ($L_{\text{con}}$), and subsampled background push repulsion ($L_{\text{unl\_push}}$).
+    * **Exp 001: Canonical SPOCO Foundation Baseline** *(Delegated to `ih-condor` compute node)*: Full fine-tuning baseline directly leveraging VoxTell's native 32-channel decoder feature map with single-anchor connected-component supervision ($L_{\text{obj}}$), unannotated iterative coverage suppression consistency ($L_{\text{con}}$), and subsampled background push repulsion ($L_{\text{unl\_push}}$).
     * **Exp 002: Parameter-Efficient Adapters vs.\ Full Fine-Tuning for Representation Preservation (Hypothesis H1)**: Testing whether freezing the pre-trained vision-language backbone and training lightweight residual 3D convolutional adapter layers prevents catastrophic forgetting of anatomical priors while learning metric hyperspherical embeddings.
     * **Exp 003: Multi-Anchor Volumetric Scaling for Conglomerate \& Diffuse Pathologies (Hypothesis H2)**: Testing dynamic multi-anchor sampling scaled by component volume ($K_c \propto V_c^{1/3}$) along the 3D medial axis to eliminate variance strain on large non-focal entities (e.g., lobar consolidation, massive effusions, diffuse emphysema).
     * **Exp 004: Morphology-Adaptive Margin \& Kernel Calibration (Hypothesis H3)**: Testing category-adaptive variance margins $\delta_{\text{var}}(c) = \delta_0 (1 - \beta S_c)$ calibrated to anatomical sphericity ($S$) established in Phase~1 (tight clusters for compact nodules vs.\ flexible envelopes for sheet-like infiltrates).

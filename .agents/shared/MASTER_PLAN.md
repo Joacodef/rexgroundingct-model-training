@@ -35,15 +35,15 @@
   1. *Statistical Prior Baseline Module*: Executable non-neural prior generator module.
   2. *Empirical Baseline Metrics*: Quantitative benchmark (Dice & Hit Rate) establishing the non-learning lower-bound performance.
 
-#### Phase 2B: VoxTell Zero-Shot Baseline & Preprocessing Audit
+#### Phase 2B: Off-the-Shelf VoxTell Pre-Trained Baseline & Diagnostics
 * **Core Research Scope**:
-  * **Zero-Shot Baseline Evaluation**: Establish official zero-shot validation benchmarks and inference fidelity across validation scans.
+  * **Off-the-Shelf Baseline Evaluation**: Establish pre-trained foundation model validation benchmarks and inference fidelity across validation scans.
   * **Inference Dynamics & Sensitivity**: Evaluate sliding window parameters (tile step size, patch padding, Gaussian weighting) and continuous logit distributions.
   * **Per-Category Logit Calibration**: Profile pre-sigmoid probability distributions per finding category to optimize binarization thresholds ($p_c$).
   * **Category-Level Failure Analysis**: Systematic error audit across all 14 finding categories isolating spatial misalignment, text shift, or suppression bias relative to Phase 2A statistical baseline.
 
 * **Key Deliverables**:
-  1. *Zero-Shot Benchmark & Error Matrix*: Validation evaluation of VoxTell baseline with 14-category error breakdown.
+  1. *Off-the-Shelf Benchmark & Error Matrix*: Validation evaluation of VoxTell baseline with 14-category error breakdown.
   2. *Phase 2 Baseline Audit Report*: Detailed failure mode analysis detailing root causes and actionable fine-tuning hypotheses.
 
 ---

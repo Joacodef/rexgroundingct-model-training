@@ -80,7 +80,7 @@ def main():
             embed_text_prompts_cpu_safe(text_prompts: List[str] | str) -> torch.Tensor
 
         Objective:
-            Computes text embeddings using CPU-offloaded Qwen2-0.5B text backbone to prevent
+            Computes text embeddings using CPU-offloaded Qwen3-Embedding-4B text backbone to prevent
             CUDA VRAM OOM while returning final prompt tensor embeddings on GPU device.
 
         Args:

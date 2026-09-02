@@ -27,7 +27,7 @@ logger = logging.getLogger("voxtell_spoco")
 class VoxTellSpocoDecoder(VoxTellDecoder):
     """
     Signature:
-        VoxTellSpocoDecoder(encoder, num_classes, n_conv_per_stage, deep_supervision, num_maskformer_stages=5, embedding_dim=16, ...)
+        VoxTellSpocoDecoder(encoder, num_classes, n_conv_per_stage, deep_supervision, num_maskformer_stages=5, embedding_dim=32, ...)
 
     Objective:
         Subclass of VoxTellDecoder replacing the scalar einsum dot-product output
@@ -39,7 +39,7 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
         n_conv_per_stage: Number of convolution blocks per decoder stage.
         deep_supervision (bool): Whether to output multi-scale predictions.
         num_maskformer_stages (int): Number of stages to fuse mask embeddings (default 5).
-        embedding_dim (int): Dimensionality of metric embedding space D (default 16).
+        embedding_dim (int): Dimensionality of metric embedding space D (default 32).
 
     Outputs:
         torch.Tensor: Normalized 3D metric embeddings of shape (B, D, H, W, D).
@@ -52,7 +52,7 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
         n_conv_per_stage: Union[int, Tuple[int, ...], List[int]],
         deep_supervision: bool,
         num_maskformer_stages: int = 5,
-        embedding_dim: int = 16,
+        embedding_dim: int = 32,
         **kwargs: Any,
     ) -> None:
         """Initialize VoxTellSpocoDecoder with metric embedding projection head."""
@@ -130,7 +130,7 @@ class VoxTellSpocoDecoder(VoxTellDecoder):
 class VoxTellSpocoModel(VoxTellModel):
     """
     Signature:
-        VoxTellSpocoModel(input_channels=1, embedding_dim=16, ...)
+        VoxTellSpocoModel(input_channels=1, embedding_dim=32, ...)
 
     Objective:
         VoxTell foundation model adapted for SPOCO metric learning.
@@ -139,7 +139,7 @@ class VoxTellSpocoModel(VoxTellModel):
 
     Inputs:
         input_channels (int): Input image channels (default 1 for CT).
-        embedding_dim (int): Dimensionality of metric embedding space (default 16).
+        embedding_dim (int): Dimensionality of metric embedding space (default 32).
         text_embedding_dim (int): Dimension of input text query embeddings (default 2560).
         deep_supervision (bool): Whether deep supervision is enabled (default False).
 
@@ -150,7 +150,7 @@ class VoxTellSpocoModel(VoxTellModel):
     def __init__(
         self,
         input_channels: int = 1,
-        embedding_dim: int = 16,
+        embedding_dim: int = 32,
         deep_supervision: bool = False,
         **kwargs: Any,
     ) -> None:

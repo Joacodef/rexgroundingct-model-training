@@ -124,6 +124,7 @@ def main():
         img_raw_dir=Path(args.img_raw_dir),
         force_rebuild=args.force_rebuild,
         threshold_mode="percentile",
+        threshold_factors=CATEGORY_THRESHOLD_FACTORS,
     )
 
     # Delegate to shared runner

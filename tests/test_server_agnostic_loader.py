@@ -2,7 +2,6 @@ import os
 import sys
 import unittest
 from pathlib import Path
-import torch
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:

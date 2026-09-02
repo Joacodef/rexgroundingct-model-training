@@ -12,7 +12,6 @@ USAGE:          Single-GPU: python scripts/common/voxtell_inference.py --split v
 
 import os
 import gc
-import ctypes
 import json
 import argparse
 from pathlib import Path
@@ -26,9 +25,6 @@ load_dotenv(override=False)
 import torch
 import torch.distributed as dist
 import numpy as np
-import nibabel as nib
-from pathlib import Path
-from tqdm import tqdm
 from huggingface_hub import snapshot_download
 
 # Strictly isolate GPU before VoxTell imports
@@ -92,23 +88,34 @@ def main():
     if is_distributed and dist.is_available() and dist.is_initialized():
         dist.barrier()
     
-    # Resolve the base models folder to keep folders clean
-    models_root = os.path.dirname(download_dir) if download_dir.endswith("voxtell_v1.0") else download_dir
-    
     # Target recommended model version v1.1
-    model_name = "voxtell_v1.1" 
-    
-    # Get Weights from Hugging Face (Rank 0 checks/downloads first)
+    model_name = "voxtell_v1.1"
+
+    # Resolve the base models folder to keep folders clean. MODEL_DIR may point either at the
+    # models root (.../models) or already at a version directory (.../models/voxtell_v1.1); in the
+    # latter case its parent is the root, otherwise snapshot_download nests a duplicate copy at
+    # .../models/voxtell_v1.1/voxtell_v1.1.
+    if os.path.basename(os.path.normpath(download_dir)).startswith("voxtell_v"):
+        models_root = os.path.dirname(os.path.normpath(download_dir))
+    else:
+        models_root = download_dir
+
+    voxtell_weights_dir = os.path.join(models_root, model_name)
+
+    # Get Weights from Hugging Face (Rank 0 checks/downloads first). Skip the network round-trip
+    # when the checkpoint is already on disk, so compute nodes without egress can still run.
     if rank == 0:
-        snapshot_download(
-            repo_id="mrokuss/VoxTell", 
-            allow_patterns=[f"{model_name}/*", "*.json"], 
-            local_dir=models_root
-        )
+        local_ckpt = os.path.join(voxtell_weights_dir, "fold_0", "checkpoint_final.pth")
+        if os.path.exists(local_ckpt):
+            print(f"Using locally cached VoxTell weights at {voxtell_weights_dir}")
+        else:
+            snapshot_download(
+                repo_id="mrokuss/VoxTell",
+                allow_patterns=[f"{model_name}/*", "*.json"],
+                local_dir=models_root
+            )
     if is_distributed and dist.is_available() and dist.is_initialized():
         dist.barrier()
-        
-    voxtell_weights_dir = os.path.join(models_root, model_name)
 
     # Initialize Predictor on isolated device
     predictor = VoxTellPredictor(model_dir=voxtell_weights_dir, device=device)

@@ -11,12 +11,10 @@ OBJECTIVE:      Implement mathematically calibrated Gaussian soft masks,
 """
 
 import math
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Any, Optional
 import numpy as np
 from scipy.ndimage import label
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 
 def compute_gaussian_soft_mask(

@@ -1,7 +1,6 @@
 import os
 import json
 import argparse
-import torch
 import nibabel as nib
 from dotenv import load_dotenv
 from monai.transforms import LoadImaged, EnsureChannelFirstd

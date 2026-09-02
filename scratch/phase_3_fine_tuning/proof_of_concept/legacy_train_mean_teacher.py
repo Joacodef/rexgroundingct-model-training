@@ -21,7 +21,6 @@ import hashlib
 import argparse
 import torch
 import numpy as np
-import nibabel as nib
 from tqdm import tqdm
 
 import monai

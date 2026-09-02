@@ -36,8 +36,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from scripts.config import (
-    DATASET_JSON, RAW_IMAGES_DIR, RAW_MASKS_DIR, 
-    TEXT_CACHE_DIR, TMP_PREP_DIR, LOGS_DIR, MODEL_DIR
+    DATASET_JSON, RAW_IMAGES_DIR, RAW_MASKS_DIR,
+    TEXT_CACHE_DIR, LOGS_DIR, MODEL_DIR
 )
 
 # Import Phase 3 Shared Common Infrastructure
@@ -470,6 +470,7 @@ def main() -> None:
         
         start_epoch = 1
         best_loss = float("inf")
+        best_model_path = output_dir / "best_model.pt"
         latest_model_path = output_dir / "latest_model.pt"
 
         if args.resume and latest_model_path.exists():
@@ -479,9 +480,18 @@ def main() -> None:
             teacher_model.load_state_dict(checkpoint["teacher_state_dict"])
             if "optimizer_state_dict" in checkpoint:
                 optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            if "loss" in checkpoint:
-                best_loss = checkpoint["loss"]
             start_epoch = checkpoint.get("epoch", 0) + 1
+            # Recover the true best loss from best_model.pt; latest_model.pt only carries the last
+            # epoch's loss, which would let a worse checkpoint overwrite the best one after a resume.
+            if best_model_path.exists():
+                try:
+                    best_ckpt = torch.load(best_model_path, map_location="cpu", weights_only=False)
+                    if "loss" in best_ckpt:
+                        best_loss = best_ckpt["loss"]
+                except Exception:
+                    pass
+            # Fast-forward the cosine schedule so the resumed LR continues instead of restarting at epoch 1
+            scheduler.last_epoch = start_epoch - 1
             logger.info(f"Successfully resumed from epoch {start_epoch}, previous best loss: {best_loss:.4f}")
         
         # Wrap student in DistributedDataParallel
@@ -540,6 +550,8 @@ def main() -> None:
             
             # Save checkpoints strictly on Rank 0
             if rank == 0:
+                # Re-create the output directory in case it was renamed or moved mid-run
+                output_dir.mkdir(parents=True, exist_ok=True)
                 unwrapped_student = get_unwrapped_state_dict(student_model)
                 unwrapped_teacher = get_unwrapped_state_dict(teacher_model)
                 torch.save({

@@ -37,7 +37,6 @@ $ python scripts/patch_voxtell_env.py
 """
 
 import os
-import re
 import importlib.util
 
 def patch_voxtell_predictor():

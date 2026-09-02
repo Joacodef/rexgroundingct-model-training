@@ -15,9 +15,7 @@ import os
 import json
 import argparse
 import numpy as np
-import nibabel as nib
 from tqdm import tqdm
-from dotenv import load_dotenv
 
 import sys
 from pathlib import Path
@@ -31,7 +29,6 @@ from scripts.config import (
     RAW_IMAGES_DIR,
     PREDICTIONS_DIR,
     DATASET_JSON,
-    DATA_DIR,
     CATEGORY_MAP
 )
 from scripts.common.orientation import load_nifti_ras

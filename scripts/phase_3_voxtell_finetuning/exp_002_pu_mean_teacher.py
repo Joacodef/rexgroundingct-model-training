@@ -39,8 +39,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from scripts.config import (
-    DATASET_JSON, RAW_IMAGES_DIR, RAW_MASKS_DIR, 
-    TEXT_CACHE_DIR, TMP_PREP_DIR, LOGS_DIR, MODEL_DIR
+    DATASET_JSON, RAW_IMAGES_DIR, RAW_MASKS_DIR,
+    TEXT_CACHE_DIR, LOGS_DIR, MODEL_DIR
 )
 
 # Import Phase 3 Shared Common Infrastructure

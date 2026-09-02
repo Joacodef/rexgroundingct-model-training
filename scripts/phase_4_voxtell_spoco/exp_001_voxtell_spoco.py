@@ -5,7 +5,7 @@ PHASE:          Phase 4 — VoxTell-SPOCO Metric Learning
 LOCATION:       scripts/phase_4_voxtell_spoco/exp_001_voxtell_spoco.py
 OBJECTIVE:      Fine-tune VoxTell adapted for Sparse Object-level Consistency
                 (SPOCO, Wolny et al., CVPR 2022). Maps 3D CT voxels into a continuous
-                16D metric embedding space on a unit hypersphere, regularized via
+                32D metric embedding space on a unit hypersphere, regularized via
                 Student-Teacher unannotated consistency with iterative coverage suppression,
                 multi-instance connected-component anchoring, dual-view intensity perturbations,
                 and background repulsion to resolve instance suppression.
@@ -17,7 +17,6 @@ USAGE:          Single-GPU: python scripts/phase_4_voxtell_spoco/exp_001_voxtell
 
 import os
 import sys
-import math
 import argparse
 import logging
 from pathlib import Path
@@ -29,8 +28,6 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -46,7 +43,6 @@ from scripts.config import (
     RAW_IMAGES_DIR,
     RAW_MASKS_DIR,
     TEXT_CACHE_DIR,
-    TMP_PREP_DIR,
     LOGS_DIR,
     MODEL_DIR,
 )
@@ -64,11 +60,8 @@ from scripts.phase_3_voxtell_finetuning.common import (
 
 # Phase 4 Common Infrastructure (VoxTell-SPOCO Model & Loss Engine)
 from scripts.phase_4_voxtell_spoco.common import (
-    VoxTellSpocoModel,
     load_voxtell_spoco_model,
     compute_spoco_total_loss,
-    compute_gaussian_soft_mask,
-    extract_instances_from_embeddings,
 )
 
 # Experiment log directory pairing
@@ -443,8 +436,11 @@ def main() -> None:
     if args.resume and latest_model_path.exists():
         if rank == 0:
             logger.info(f"Resuming training from checkpoint: {latest_model_path}")
-        checkpoint = torch.load(latest_model_path, map_location=device)
-        student_model.load_state_dict(checkpoint["student_state_dict"])
+        checkpoint = torch.load(latest_model_path, map_location=device, weights_only=False)
+        # Checkpoints are serialized unwrapped (get_unwrapped_state_dict), so load into the inner
+        # module: a DDP wrapper expects 'module.'-prefixed keys and would reject them outright.
+        unwrapped_student = student_model.module if hasattr(student_model, "module") else student_model
+        unwrapped_student.load_state_dict(checkpoint["student_state_dict"])
         teacher_model.load_state_dict(checkpoint["teacher_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         start_epoch = checkpoint["epoch"] + 1

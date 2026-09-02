@@ -7,6 +7,13 @@ scipy==1.17.1
 nibabel==5.4.2
 monai>=1.3.0
 
+# Dataset retrieval (scripts/common/download_data.py, voxtell_inference.py)
+huggingface-hub==0.36.2
+
+# Figure rendering (scripts/analysis/plot_*.py, report/fig_script/)
+matplotlib==3.11.1
+seaborn==0.13.2
+
 # Monitoring and execution utilities
 tqdm==4.67.3
 wandb

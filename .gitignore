@@ -65,8 +65,6 @@ slurm-out
 # Training telemetry & execution logs
 wandb/
 logs/*
-!logs/phase_2_inference_audit/
-!logs/phase_3_fine_tuning/
 checkpoints/
 nohup.out
 screenlog.0

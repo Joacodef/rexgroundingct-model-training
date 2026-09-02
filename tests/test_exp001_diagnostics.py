@@ -9,9 +9,7 @@ USAGE:          CUDA_VISIBLE_DEVICES=1 python tests/test_exp001_diagnostics.py
 ===============================================================================
 """
 
-import os
 import sys
-import json
 import argparse
 import logging
 from pathlib import Path
@@ -27,8 +25,8 @@ from torch.utils.data import DataLoader
 from monai.losses import DiceLoss
 
 from scripts.config import (
-    DATASET_JSON, DATASET_MINI_JSON, RAW_IMAGES_DIR, RAW_MASKS_DIR, 
-    TEXT_CACHE_DIR, TMP_PREP_DIR, LOGS_DIR, MODEL_DIR
+    DATASET_MINI_JSON, RAW_IMAGES_DIR, RAW_MASKS_DIR,
+    TEXT_CACHE_DIR, MODEL_DIR
 )
 from scripts.phase_3_voxtell_finetuning.exp_001_naive_finetuning import (
     ReXDataset, load_voxtell_model

@@ -9,14 +9,12 @@ OBJECTIVE:      Core PyTorch / Nibabel processing class for building, loading,
 ===============================================================================
 """
 
-import os
 import sys
 import gc
 import json
 import numpy as np
 import torch
 import torch.nn.functional as F
-import nibabel as nib
 from pathlib import Path
 from tqdm import tqdm
 from scipy.ndimage import label
@@ -105,13 +103,14 @@ class EmpiricalSpatialPDFBaseline:
         force_rebuild: bool = False,
         threshold_mode: str = "percentile",
         min_blob_voxels: int = 10,
+        threshold_factors: dict = None,
     ):
         """
         Signature:
             __init__(
-                pdf_cache_path: Path, dataset_json_path: Path, seg_raw_dir: Path, 
-                img_raw_dir: Path, max_train_scans: int, force_rebuild: bool, 
-                threshold_mode: str, min_blob_voxels: int
+                pdf_cache_path: Path, dataset_json_path: Path, seg_raw_dir: Path,
+                img_raw_dir: Path, max_train_scans: int, force_rebuild: bool,
+                threshold_mode: str, min_blob_voxels: int, threshold_factors: dict
             ) -> None
 
         Objective:
@@ -126,6 +125,9 @@ class EmpiricalSpatialPDFBaseline:
             force_rebuild (bool): Whether to force rebuilding PDF heatmaps from scratch. Default False.
             threshold_mode (str): Binarization strategy ('percentile' for Exp 001, 'quantile' for Exp 002).
             min_blob_voxels (int): Minimum voxel threshold for 3D component noise pruning. Default 10.
+            threshold_factors (dict, optional): Per-category percentile scaling factors keyed by category
+                code ('1a'..'2h') used when threshold_mode='percentile'. Categories absent from the mapping
+                fall back to 0.40. Defaults to a uniform 0.40 factor for every category.
 
         Outputs:
             None
@@ -141,6 +143,7 @@ class EmpiricalSpatialPDFBaseline:
         self.max_train_scans = max_train_scans
         self.threshold_mode = threshold_mode
         self.min_blob_voxels = min_blob_voxels
+        self.threshold_factors = threshold_factors if isinstance(threshold_factors, dict) else {}
 
         if force_rebuild or not self.pdf_cache_path.exists():
             print(f"[INFO] Building 3D Empirical Spatial PDF Heatmaps from Train Split (max {self.max_train_scans} scans)...")
@@ -320,7 +323,7 @@ class EmpiricalSpatialPDFBaseline:
             binary_mask = (pdf_target >= cutoff).astype(np.uint8)
         else:
             # Exp 001: Percentile Factor Scaling Strategy
-            factor = self.threshold_factors.get(code, 0.40) if hasattr(self, 'threshold_factors') and isinstance(self.threshold_factors, dict) else 0.40
+            factor = self.threshold_factors.get(code, 0.40)
             p_threshold = factor * max_p
             binary_mask = (pdf_target >= p_threshold).astype(np.uint8)
 

@@ -13,7 +13,6 @@ USAGE:          python scripts/common/package_submission.py \
 ===============================================================================
 """
 
-import os
 import sys
 import json
 import hashlib
@@ -27,7 +26,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from scripts.config import DATASET_JSON, RAW_IMAGES_DIR, PREDICTIONS_DIR, DATA_DIR
+from scripts.config import DATASET_JSON, RAW_IMAGES_DIR
 from scripts.common.orientation import load_nifti_ras
 
 

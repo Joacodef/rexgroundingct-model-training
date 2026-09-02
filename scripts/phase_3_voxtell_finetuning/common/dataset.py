@@ -10,7 +10,6 @@ OBJECTIVE:      Provide native-resolution 3D CT dataset loader with MONAI
 """
 
 import os
-import sys
 import json
 import hashlib
 import logging
@@ -18,7 +17,6 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 import numpy as np
-import nibabel as nib
 
 import monai
 monai.data.set_track_meta(False)

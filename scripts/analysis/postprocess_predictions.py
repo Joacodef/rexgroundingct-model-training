@@ -22,7 +22,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from scripts.config import RAW_IMAGES_DIR, DATASET_JSON
+from scripts.config import RAW_IMAGES_DIR, DATASET_JSON, CATEGORY_MAP
 from scripts.common.orientation import load_nifti_ras, save_nifti
 
 
@@ -67,26 +67,32 @@ def process_single_case(args_tuple: tuple) -> str:
         Worker function to load, threshold, noise-filter, and save a single scan prediction.
 
     Inputs:
-        args_tuple (tuple): (pred_path, out_path, parent_ct_path, threshold_list, min_voxels_list)
+        args_tuple (tuple): (pred_path, out_path, parent_ct_path, cat_codes, thresholds_by_cat,
+            min_voxels_by_cat, default_threshold, default_min_voxels) where cat_codes maps each
+            finding channel index of this scan to its category code ('1a'..'2h').
 
     Outputs:
         str: Success scan ID string or error message.
     """
-    pred_path, out_path, parent_ct_path, threshold_list, min_voxels_list = args_tuple
+    (pred_path, out_path, parent_ct_path, cat_codes, thresholds_by_cat,
+     min_voxels_by_cat, default_threshold, default_min_voxels) = args_tuple
     try:
         data_ras, _, _ = load_nifti_ras(pred_path)
-        
+
         # Determine if input is 3D or 4D
         if data_ras.ndim == 3:
             data_ras = data_ras[None] # (1, X, Y, Z)
-            
+
         num_channels = data_ras.shape[0]
         cleaned_channels = []
 
         for c in range(num_channels):
             chan_data = data_ras[c]
-            t_val = threshold_list[c] if c < len(threshold_list) else 0.5
-            v_min = min_voxels_list[c] if c < len(min_voxels_list) else 0
+            # Finding channel index c is NOT a category index: resolve this scan's category code first
+            # so per-category thresholds land on the finding they were calibrated for.
+            cat_code = cat_codes[c] if c < len(cat_codes) else None
+            t_val = thresholds_by_cat.get(cat_code, default_threshold)
+            v_min = min_voxels_by_cat.get(cat_code, default_min_voxels)
 
             # Binarize if continuous floating point probabilities
             if np.issubdtype(chan_data.dtype, np.floating):
@@ -177,43 +183,71 @@ def main() -> None:
 
     print(f"[INFO] Found {len(scan_files)} target prediction scans to post-process.")
 
-    # Load per-category thresholds if specified
-    num_categories = 14
-    if args.thresholds_json and Path(args.thresholds_json).exists():
-        with open(args.thresholds_json, 'r') as f:
-            t_data = json.load(f)
-        if isinstance(t_data, list):
-            threshold_list = t_data
-        elif isinstance(t_data, dict):
-            threshold_list = [t_data.get(str(i), args.threshold) for i in range(num_categories)]
-        else:
-            threshold_list = [args.threshold] * num_categories
-    else:
-        threshold_list = [args.threshold] * num_categories
+    # Load per-category thresholds if specified. Mappings are keyed by category code ('1a'..'2h');
+    # a bare list is accepted as an ordered override matching CATEGORY_MAP's declaration order.
+    category_codes = list(CATEGORY_MAP.keys())
 
-    # Load per-category minimum component volume if specified
-    if args.min_volumes_json and Path(args.min_volumes_json).exists():
-        with open(args.min_volumes_json, 'r') as f:
-            v_data = json.load(f)
-        if isinstance(v_data, list):
-            min_voxels_list = v_data
-        elif isinstance(v_data, dict):
-            min_voxels_list = [v_data.get(str(i), args.min_volume) for i in range(num_categories)]
-        else:
-            min_voxels_list = [args.min_volume] * num_categories
-    else:
-        min_voxels_list = [args.min_volume] * num_categories
+    def _load_per_category(json_path: str, default_value):
+        """
+        Signature:
+            _load_per_category(json_path: str, default_value: float | int) -> dict
+
+        Objective:
+            Load a per-category override mapping keyed by category code, accepting either a
+            {'1a': v, ...} dict or an ordered list aligned to CATEGORY_MAP.
+
+        Inputs:
+            json_path (str): Path to the JSON override file, or None to use the default for all categories.
+            default_value (float | int): Value applied to categories absent from the override file.
+
+        Outputs:
+            dict: Mapping from category code ('1a'..'2h') to the resolved value.
+        """
+        resolved = {code: default_value for code in category_codes}
+        if not json_path or not Path(json_path).exists():
+            return resolved
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            for code, value in zip(category_codes, data):
+                resolved[code] = value
+        elif isinstance(data, dict):
+            unknown = [k for k in data if k not in resolved]
+            if unknown:
+                print(f"[WARNING] Ignoring unknown category keys in {json_path}: {unknown}")
+            for code in category_codes:
+                if code in data:
+                    resolved[code] = data[code]
+        return resolved
+
+    thresholds_by_cat = _load_per_category(args.thresholds_json, args.threshold)
+    min_voxels_by_cat = _load_per_category(args.min_volumes_json, args.min_volume)
+
+    # Map each scan's finding channel index to its category code, so per-category values are
+    # applied to the matching finding rather than to whichever channel shares its ordinal position.
+    categories_by_scan = {}
+    for entry in entries:
+        cats = entry.get("categories", {})
+        categories_by_scan[entry["name"]] = [
+            str(cats.get(str(i), "")) for i in range(len(cats))
+        ]
 
     # Prepare worker tasks
     tasks = []
     for pred_path in scan_files:
         out_path = output_dir / pred_path.name
         parent_ct_path = RAW_IMAGES_DIR / pred_path.name
-        tasks.append((pred_path, out_path, parent_ct_path, threshold_list, min_voxels_list))
+        cat_codes = categories_by_scan.get(pred_path.name, [])
+        tasks.append((
+            pred_path, out_path, parent_ct_path, cat_codes,
+            thresholds_by_cat, min_voxels_by_cat, args.threshold, args.min_volume
+        ))
 
     num_workers = min(args.num_workers, 8, os.cpu_count() or 4)
     print(f"[INFO] Executing post-processing across {num_workers} CPU workers...")
-    print(f"[INFO] Thresholds: {threshold_list[:3]}... | Min Volumes: {min_voxels_list[:3]}...")
+    distinct_t = sorted(set(thresholds_by_cat.values()))
+    distinct_v = sorted(set(min_voxels_by_cat.values()))
+    print(f"[INFO] Thresholds per category: {distinct_t} | Min volumes per category: {distinct_v}")
 
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         results = list(tqdm(executor.map(process_single_case, tasks), total=len(tasks), desc="Post-Processing"))

@@ -7,13 +7,11 @@ OBJECTIVE:      Verify end-to-end execution of run_prior_inference_and_eval(),
 ===============================================================================
 """
 
-import os
 import sys
 import tempfile
 import unittest
 import json
 import numpy as np
-import nibabel as nib
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]

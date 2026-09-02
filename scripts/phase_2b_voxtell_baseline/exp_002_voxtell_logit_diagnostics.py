@@ -1,11 +1,11 @@
 """
 ===============================================================================
 SCRIPT:         VoxTell Continuous Logit & Threshold Diagnostic Pipeline
-PHASE:          Phase 2B — VoxTell Zero-Shot Baseline & Preprocessing Audit
+PHASE:          Phase 2B — VoxTell Off-the-Shelf Baseline & Preprocessing Audit
 LOCATION:       scripts/phase_2b_voxtell_baseline/exp_002_voxtell_logit_diagnostics.py
 OBJECTIVE:      Profiles continuous sigmoid probability heatmaps (min, max, p95, p99, p99.9)
                 and sweeps binarization thresholds (p_c in [0.01, 0.50]) to diagnose
-                over-pruning failure modes in VoxTell zero-shot predictions.
+                over-pruning failure modes in off-the-shelf VoxTell predictions.
 USAGE:          python scripts/phase_2b_voxtell_baseline/exp_002_voxtell_logit_diagnostics.py --num_cases 5
 ===============================================================================
 """
@@ -38,7 +38,7 @@ from scripts.config import (
     CATEGORY_MAP
 )
 from voxtell.inference.predictor import VoxTellPredictor
-from scripts.common.orientation import load_nifti_ras, save_nifti
+from scripts.common.orientation import load_nifti_ras
 from scripts.common.evaluate import compute_dice
 
 
@@ -125,12 +125,12 @@ def main():
         # load_nifti_ras() standardizes DICOM/NIfTI headers so axis 0=Right, 1=Anterior, 2=Superior.
         # Image shape: (X, Y, Z), GT shape: (F, X, Y, Z)
         img_ras, ras_nii, _ = load_nifti_ras(img_path)
-        gt_ras, _, _ = load_nifti_ras(gt_path, ref_affine=ras_nii.affine)
+        gt_ras, _, _ = load_nifti_ras(gt_path)
         if gt_ras.ndim == 3:
             gt_ras = np.expand_dims(gt_ras, axis=0)
 
         # Step 2: Transpose image array from NIfTI RAS indexing (X, Y, Z) to nnUNet/VoxTell memory layout (Z, Y, X)
-        # CRITICAL TECHNICAL DIRECTIVE: VoxTell's 3D Swin UNet model was pre-trained on nnUNet v2 pipelines.
+        # CRITICAL TECHNICAL DIRECTIVE: VoxTell's 3D ResidualEncoder (ResEncL) backbone was pre-trained on nnUNet v2 pipelines.
         # nnUNet's NibabelIOWithReorient applies .transpose((2, 1, 0)) to place the axial depth/slice axis (Z)
         # at index 0 (depth-first C-contiguous ordering). Without this transposition, 3D convolutions receive
         # rotated sagittal cross-sections, destroying spatial feature matching and collapsing logits to near-zero.

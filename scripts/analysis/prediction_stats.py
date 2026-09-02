@@ -15,7 +15,6 @@ USAGE:            python scripts/analysis/prediction_stats.py \
 ===============================================================================
 """
 
-import os
 import sys
 import json
 import argparse

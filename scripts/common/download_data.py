@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from huggingface_hub import hf_hub_download, list_repo_files
+from huggingface_hub import hf_hub_download
 from tqdm import tqdm
 from dotenv import load_dotenv
 

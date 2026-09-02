@@ -12,10 +12,9 @@ import json
 import logging
 import pydoc
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Union, Optional
+from typing import List, Tuple, Any, Union
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 

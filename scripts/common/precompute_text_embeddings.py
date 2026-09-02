@@ -8,13 +8,12 @@ OBJECTIVE:      Precompute offline Qwen text embeddings for all ReXGroundingCT
 ===============================================================================
 """
 
-import os
 import sys
 import json
 import argparse
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 import torch
 from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm

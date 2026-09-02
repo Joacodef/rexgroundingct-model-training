@@ -8,11 +8,12 @@ OBJECTIVE:      Generate vibrant 3D GPU-accelerated volumetric density renders
                 anatomical 3D orientation triads (R-L, A-P, Superior-Inferior) in 
                 the bottom-right corner of each view, clear row pathology headers, 
                 per-row colorbars, and tight border-free layout.
+REQUIRES:       PyVista, which is NOT part of the default .venv. Install it first:
+                    .venv/bin/pip install -r requirements/visualization-3d.txt
 USAGE:          python scripts/analysis/plot_3d_spatial_density_heatmaps.py
 ===============================================================================
 """
 
-import os
 import sys
 import argparse
 from pathlib import Path

@@ -1,0 +1,6 @@
+# Optional: 3D volumetric density rendering
+# Required only by scripts/analysis/plot_3d_spatial_density_heatmaps.py.
+# Not installed in the default .venv; install explicitly when rendering 3D density figures:
+#   .venv/bin/pip install -r requirements/visualization-3d.txt
+-r base.txt
+pyvista

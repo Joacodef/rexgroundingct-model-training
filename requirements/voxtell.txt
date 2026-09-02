@@ -1,7 +1,7 @@
 -r base.txt
---extra-index-url https://download.pytorch.org/whl/cu130
-torch==2.13.0+cu130
-torchvision==0.28.0+cu130
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.8.0+cu128
+torchvision==0.23.0+cu128
 monai
 nibabel
 python-dotenv

@@ -17,7 +17,6 @@ OBJECTIVE:      Verify exact mathematical and geometric properties of MPR consis
 import sys
 from pathlib import Path
 
-import pytest
 import torch
 import torch.nn.functional as F
 
@@ -27,7 +26,6 @@ if str(ROOT_DIR) not in sys.path:
 
 from scripts.phase_3_voxtell_finetuning.exp_003_mpr_loss import (
     compute_mpr_consistency_loss,
-    compute_roi_mask,
 )
 
 

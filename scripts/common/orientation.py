@@ -7,8 +7,6 @@ OBJECTIVE:      Minimal, clean single source of truth for loading, inspecting,
 ===============================================================================
 """
 
-import os
-import sys
 import numpy as np
 import nibabel as nib
 from pathlib import Path

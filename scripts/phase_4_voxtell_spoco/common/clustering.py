@@ -9,9 +9,9 @@ OBJECTIVE:      Convert dense 3D unit-hypersphere metric embeddings into discret
 """
 
 import math
-from typing import List, Tuple, Dict, Any, Optional
+from typing import Optional
 import numpy as np
-from scipy.ndimage import label, find_objects
+from scipy.ndimage import label
 
 
 def extract_instances_from_embeddings(

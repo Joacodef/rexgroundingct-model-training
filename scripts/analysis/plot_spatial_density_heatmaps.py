@@ -10,7 +10,6 @@ USAGE:          python scripts/analysis/plot_spatial_density_heatmaps.py
 ===============================================================================
 """
 
-import os
 import sys
 import argparse
 from pathlib import Path
@@ -24,7 +23,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from scripts.config import DATA_DIR, VISUALIZATIONS_DIR, CATEGORY_MAP, SPATIAL_TAXONOMY, PHASE_2A_PDFS_DIR
+from scripts.config import DATA_DIR, VISUALIZATIONS_DIR, CATEGORY_MAP, PHASE_2A_PDFS_DIR
 
 
 def extract_coronal_peak_slice(density_3d: np.ndarray) -> tuple[int, int, int, float, np.ndarray]:

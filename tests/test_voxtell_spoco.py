@@ -17,16 +17,13 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 import math
-import pytest
 import torch
 import numpy as np
 
-from scripts.phase_4_voxtell_spoco.common.voxtell_spoco import VoxTellSpocoModel
 from scripts.phase_4_voxtell_spoco.common.losses import (
     compute_gaussian_soft_mask,
     sample_annotated_anchors,
     sample_unannotated_anchors,
-    compute_instance_dice_loss,
     compute_unlabeled_push_loss,
     compute_spoco_total_loss,
 )

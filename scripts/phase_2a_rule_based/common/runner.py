@@ -7,7 +7,6 @@ OBJECTIVE:      Reusable validation set inference loop and automated metric
 ===============================================================================
 """
 
-import os
 import sys
 import gc
 import json

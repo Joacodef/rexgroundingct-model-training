@@ -10,7 +10,6 @@ OBJECTIVE:      Generates 6 high-contrast 2D CT slice overlays across 3 orthogon
 USAGE:          python scripts/analysis/plot_single_case.py --scan_id train_19891_a_2
 ===============================================================================
 """
-import os
 import sys
 import json
 import random
@@ -20,7 +19,6 @@ import textwrap
 import argparse
 from pathlib import Path
 import numpy as np
-import nibabel as nib
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -31,7 +29,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from scripts.config import RAW_IMAGES_DIR, RAW_MASKS_DIR, PREDICTIONS_DIR, DATASET_JSON, CATEGORY_MAP, SCRATCH_DIR, VISUALIZATIONS_DIR
+from scripts.config import RAW_IMAGES_DIR, RAW_MASKS_DIR, PREDICTIONS_DIR, DATASET_JSON, CATEGORY_MAP, VISUALIZATIONS_DIR
 from scripts.common.orientation import load_nifti_ras, save_nifti
 
 WINDOW_PRESETS = {
@@ -83,19 +81,20 @@ def resolve_contrast_window(cat_code: str, img_data: np.ndarray, user_preset: st
         else:
             return img_min, img_max
 
-def load_canonical_ras(nifti_path: Path, override_affine: np.ndarray = None) -> np.ndarray:
+def load_canonical_ras(nifti_path: Path) -> np.ndarray:
     """
-    load_canonical_ras(nifti_path: Path, override_affine: np.ndarray = None) -> np.ndarray
+    load_canonical_ras(nifti_path: Path) -> np.ndarray
     Loads a NIfTI file in canonical RAS space using centralized spatial engine scripts.common.orientation.
+    Under the Universal Mask Policy, load_nifti_ras() already anchors every segmentation mask to its
+    parent CT scan's raw header affine, so no reference affine needs to be supplied here.
 
     Args:
         nifti_path (Path): Path to target .nii.gz file.
-        override_affine (np.ndarray, optional): 4x4 affine matrix to override NIfTI header affine before reorienting.
 
     Returns:
         np.ndarray: Reoriented RAS data array with 4D shape (channels, X, Y, Z).
     """
-    data_ras, _, _ = load_nifti_ras(nifti_path, ref_affine=override_affine)
+    data_ras, _, _ = load_nifti_ras(nifti_path)
     if data_ras.ndim == 3:
         data_ras = np.expand_dims(data_ras, axis=0)
     return data_ras
@@ -315,9 +314,9 @@ def select_gt_and_pred_max_slices(gt_mask: np.ndarray, pred_mask: np.ndarray, ax
 
     return s_gt, s_pred, label_gt, label_pred
 
-def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, fix_gt_affine: bool = True, window_preset: str = 'auto') -> Path:
+def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, window_preset: str = 'auto') -> Path:
     """
-    plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, fix_gt_affine: bool = True, window_preset: str = 'auto') -> Path
+    plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir: Path, window_preset: str = 'auto') -> Path
     Generates a per-pathology multi-row 2D cross-sectional visualization figure for a CT scan volume.
     Each active pathology gets its own row featuring 6 2D CT slice overlays across 3 orthogonal planes
     (Max GT and Max Pred slice per plane for Axial, Coronal, Sagittal) + 1 Pathology Statistics & Prompt Card.
@@ -327,7 +326,6 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
         meta_map (dict): Dataset metadata mapping.
         pred_dir (Path): Predictions directory.
         out_dir (Path): Output directory for saved PNG images.
-        fix_gt_affine (bool): If True, overrides uninformative GT mask header affine with raw image affine before canonical reorientation.
         window_preset (str): Specified contrast window preset ('auto', 'lung', 'soft_tissue', 'bone', 'chest_default').
 
     Returns:
@@ -352,9 +350,8 @@ def plot_single_scan_case(scan_id: str, meta_map: dict, pred_dir: Path, out_dir:
     aspect_coronal = dz / dx
     aspect_sagittal = dz / dy
 
-    target_ref_affine = raw_img_affine if fix_gt_affine else None
-    gt_4d = load_canonical_ras(gt_path, override_affine=target_ref_affine)
-    pred_4d = load_canonical_ras(pred_path, override_affine=target_ref_affine)
+    gt_4d = load_canonical_ras(gt_path)
+    pred_4d = load_canonical_ras(pred_path)
 
     img_data = img_4d[0] # (X, Y, Z)
     num_findings = gt_4d.shape[0]
@@ -523,14 +520,10 @@ def main():
     parser.add_argument("--scan_id", type=str, default=None, help="Specific scan ID or comma-separated IDs (e.g. train_19891_a_2,train_13098_a_2).")
     parser.add_argument("--pred_subdir", type=str, default="phase_2a_rule_based", help="Subdirectory name inside predictions directory (default: phase_2a_rule_based).")
     parser.add_argument("--num_scans", type=int, default=1, help="Number of random scans to plot if --scan_id is omitted.")
-    parser.add_argument("--no_fix_gt_affine", action="store_true", help="If set, disables automatic GT mask header affine repair with raw CT image DICOM affine.")
     parser.add_argument("--window_preset", type=str, default="auto", choices=["auto", "lung", "soft_tissue", "bone", "chest_default"], help="Contrast window preset for CT rendering (default: auto).")
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed for sampling.")
     parser.add_argument("--out_dir", type=str, default=str(VISUALIZATIONS_DIR), help="Directory to save generated PNG images (default: scan_visualizations/).")
     args = parser.parse_args()
-
-    # Default fix_gt_affine to True: repairs raw GT mask headers (np.eye(4)) using parent CT image DICOM affine
-    fix_gt_affine = not args.no_fix_gt_affine
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -569,7 +562,6 @@ def main():
         print(f"\n--- Processing Scan [{i}/{len(target_ids)}]: '{scan_id}' ---", flush=True)
         out_p = plot_single_scan_case(
             scan_id, meta_map, pred_dir, out_dir,
-            fix_gt_affine=fix_gt_affine,
             window_preset=args.window_preset
         )
         saved_paths.append(out_p)

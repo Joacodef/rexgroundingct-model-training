@@ -33,6 +33,7 @@ import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from monai.data.utils import worker_init_fn as monai_worker_init_fn
 from tqdm import tqdm
 
 # Relative root directory path resolution
@@ -70,6 +71,11 @@ from scripts.phase_4_voxtell_spoco.common import (
 EXP_LOG_DIR = LOGS_DIR / "phase_4_voxtell_spoco" / "exp_001_voxtell_spoco"
 EXP_LOG_DIR.mkdir(parents=True, exist_ok=True)
 logger = logging.getLogger("exp_001_voxtell_spoco")
+
+# Stamped into every checkpoint. Optimizer state is only restored from a checkpoint carrying this
+# exact marker, because AdamW state is mapped positionally within each parameter group and older
+# checkpoints were written with set-ordered (i.e. process-dependent) groups.
+PARAM_GROUP_ORDER = "ordered_v1"
 
 
 def apply_student_view_perturbation(images: torch.Tensor) -> torch.Tensor:
@@ -157,6 +163,7 @@ def update_ema_variables(model: nn.Module, ema_model: nn.Module, alpha: float) -
 
 def evaluate_val_loss(
     model: nn.Module,
+    teacher_model: nn.Module,
     val_loader: DataLoader,
     device: str,
     delta_var: float = 0.5,
@@ -165,6 +172,7 @@ def evaluate_val_loss(
     sigma: float | None = None,
     w_con: float = 0.1,
     w_unl_push: float = 0.1,
+    w_neg: float = 1.0,
     num_unlabeled_anchors: int = 8,
     volume_threshold: float = 0.05,
     max_batches: int = 20,
@@ -172,21 +180,27 @@ def evaluate_val_loss(
 ) -> float:
     """
     Signature:
-        evaluate_val_loss(model: nn.Module, val_loader: DataLoader, device: str, delta_var: float = 0.5, delta_dist: float = 1.5, pmaps_threshold: float = 0.5, sigma: float | None = None, w_con: float = 0.1, w_unl_push: float = 0.1, num_unlabeled_anchors: int = 8, volume_threshold: float = 0.05, max_batches: int = 20, union_target: bool = True) -> float
+        evaluate_val_loss(model: nn.Module, teacher_model: nn.Module, val_loader: DataLoader, device: str, delta_var: float = 0.5, delta_dist: float = 1.5, pmaps_threshold: float = 0.5, sigma: float | None = None, w_con: float = 0.1, w_unl_push: float = 0.1, num_unlabeled_anchors: int = 8, volume_threshold: float = 0.05, max_batches: int = 20, union_target: bool = True) -> float
 
     Objective:
         Compute validation SPOCO loss across a fixed subset of validation batches.
 
     Inputs:
         model (nn.Module): Student model to evaluate.
+        teacher_model (nn.Module): EMA Teacher, used for the consistency term. Passing the student
+            here instead (the previous behavior) degenerates L_con into 1 - sum(s^2)/sum(s), a
+            soft-mask sharpness penalty rather than a teacher-student agreement measurement.
         val_loader (DataLoader): Validation DataLoader.
         device (str): Computation device.
         delta_var (float): Intra-cluster pull distance margin (default 0.5).
         delta_dist (float): Inter-cluster push distance margin (default 1.5).
         pmaps_threshold (float): Kernel probability cutoff (default 0.5).
         sigma (float | None): Optional legacy sigma override.
-        w_con (float): Consistency loss weight. Default 0.1.
+        w_con (float): Consistency loss weight. Pass the CURRENT epoch's ramped value, not the
+            asymptotic maximum, or the validation objective differs from the trained one. Default 0.1.
         w_unl_push (float): Unlabeled background push weight. Default 0.1.
+        w_neg (float): Confirmed-absent null-target weight. Default 1.0. Inert on the validation
+            split, which samples no negative prompts, but kept aligned with training.
         num_unlabeled_anchors (int): Max unannotated anchors per volume. Default 8.
         volume_threshold (float): Stopping fraction for unlabeled coverage. Default 0.05.
         max_batches (int): Maximum number of validation batches to evaluate. Default 20.
@@ -197,6 +211,7 @@ def evaluate_val_loss(
         float: Average validation loss.
     """
     model.eval()
+    teacher_model.eval()
     val_losses = []
     with torch.no_grad():
         for b_idx, batch in enumerate(val_loader):
@@ -209,9 +224,10 @@ def evaluate_val_loss(
 
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 s_embeds = model(images, text_embeds, return_embeddings=True)
+                t_embeds = teacher_model(images, text_embeds, return_embeddings=True)
                 loss, _, _ = compute_spoco_total_loss(
                     student_embeds=s_embeds,
-                    teacher_embeds=s_embeds,
+                    teacher_embeds=t_embeds,
                     targets=targets,
                     is_absent=is_absent,
                     delta_var=delta_var,
@@ -220,6 +236,7 @@ def evaluate_val_loss(
                     sigma=sigma,
                     w_con=w_con,
                     w_unl_push=w_unl_push,
+                    w_neg=w_neg,
                     num_unlabeled_anchors=num_unlabeled_anchors,
                     volume_threshold=volume_threshold,
                     negative_supervision=True,
@@ -252,6 +269,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sigma", type=float, default=None, help="Legacy Gaussian bandwidth sigma override")
     parser.add_argument("--w_con", type=float, default=0.1, help="Consistency loss weight for unlabeled anchors (default: 0.1)")
     parser.add_argument("--w_unl_push", type=float, default=0.1, help="Unlabeled background push loss weight (default: 0.1)")
+    parser.add_argument("--w_neg", type=float, default=1.0, help="Confirmed-absent null-target loss weight L_neg (default: 1.0). L_neg is ~1e-3 in magnitude against Dice terms of order 1; this default is a starting point, not a calibrated value")
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="AdamW weight decay, applied only to parameters with ndim >= 2 outside the final decoder stage (default: 1e-4)")
     parser.add_argument("--max_unlabeled_anchors", type=int, default=8, help="Max unannotated anchors per volume (default: 8)")
     parser.add_argument(
         "--target_mode", type=str, default="union", choices=["union", "instance"],
@@ -304,7 +323,8 @@ def main() -> None:
         logger.info(f"Host Device: {device_str} | World Size: {world_size} | DDP: {is_distributed}")
         logger.info(f"Epochs: {args.epochs} | LR: {args.lr} | Alpha (EMA): {args.alpha}")
         logger.info(f"Delta Var: {args.delta_var} | Delta Dist: {args.delta_dist} | Kernel Threshold: {args.kernel_threshold}")
-        logger.info(f"W_con: {args.w_con} | W_unl_push: {args.w_unl_push} | Max Anchors: {args.max_unlabeled_anchors}")
+        logger.info(f"W_con: {args.w_con} | W_unl_push: {args.w_unl_push} | W_neg: {args.w_neg} | Max Anchors: {args.max_unlabeled_anchors}")
+        logger.info(f"Weight Decay: {args.weight_decay} (ndim >= 2 only, final decoder stage exempt) | LR Schedule: CosineAnnealingLR(T_max={args.epochs}, eta_min=1e-6)")
         logger.info(f"L_obj Target Mode: {args.target_mode} (union = scored against full finding mask, no instance-matching term in the official metric)")
         logger.info(f"Metric Embedding Dim: 32 (native decoder width) | Model Dir: {MODEL_DIR}")
         logger.info("=" * 80)
@@ -350,23 +370,60 @@ def main() -> None:
             find_unused_parameters=True,
         )
 
-    # 2. Setup Optimizer & Native bfloat16 Scaler
+    # 2. Setup Optimizer, LR Schedule & Native bfloat16 Scaler
     raw_student = student_model.module if hasattr(student_model, "module") else student_model
-    encoder_params = set(raw_student.encoder.parameters())
-    transformer_params = set(raw_student.transformer_decoder.parameters())
-    decoder_and_head_params = [
-        p for p in raw_student.parameters()
-        if p not in encoder_params and p not in transformer_params
-    ]
-    optimizer = torch.optim.AdamW(
-        [
-            {"params": list(encoder_params), "lr": args.lr * 0.1},
-            {"params": list(transformer_params), "lr": args.lr * 0.5},
-            {"params": decoder_and_head_params, "lr": args.lr},
-        ],
-        weight_decay=1e-4,
-    )
+
+    # Parameter group ORDER must be deterministic across processes. Building the groups from
+    # `set(...)` made their order depend on id()-derived hashes, which vary between runs; because
+    # Optimizer.load_state_dict maps saved state POSITIONALLY within each group, every --resume
+    # re-attached Adam's exp_avg / exp_avg_sq to a different parameter than the one they were
+    # accumulated for (a shape error where widths differ, silently wrong momentum where they
+    # match). Membership still uses id() sets, but iteration order now always comes from
+    # named_parameters(), which is stable.
+    encoder_ids = {id(p) for p in raw_student.encoder.parameters()}
+    transformer_ids = {id(p) for p in raw_student.transformer_decoder.parameters()}
+
+    # Weight decay applies only to parameters with ndim >= 2. plans.json builds the backbone with
+    # InstanceNorm3d(affine=True) and conv_bias=True, so every norm scale/shift and every conv
+    # bias is 1-D, and decaying those toward zero discards pretrained calibration.
+    # The final full-resolution decoder stage is additionally exempt: its output is L2-normalized
+    # onto S^31, so the loss is invariant to that stage's weight magnitude. No gradient opposes
+    # decay along the radial direction -- it only shrinks the weights while inflating the
+    # effective learning rate on their direction.
+    final_stage_prefix = f"decoder.stages.{len(raw_student.decoder.stages) - 1}."
+
+    groups = {
+        "encoder":      {"lr": args.lr * 0.1, "decay": [], "no_decay": []},
+        "transformer":  {"lr": args.lr * 0.5, "decay": [], "no_decay": []},
+        "decoder_head": {"lr": args.lr,       "decay": [], "no_decay": []},
+    }
+    for param_name, param in raw_student.named_parameters():
+        if id(param) in encoder_ids:
+            group_key = "encoder"
+        elif id(param) in transformer_ids:
+            group_key = "transformer"
+        else:
+            group_key = "decoder_head"
+        decays = (param.ndim >= 2) and not param_name.startswith(final_stage_prefix)
+        groups[group_key]["decay" if decays else "no_decay"].append(param)
+
+    param_groups = []
+    for group_key, spec in groups.items():
+        if spec["decay"]:
+            param_groups.append({"params": spec["decay"], "lr": spec["lr"], "weight_decay": args.weight_decay})
+        if spec["no_decay"]:
+            param_groups.append({"params": spec["no_decay"], "lr": spec["lr"], "weight_decay": 0.0})
+
+    optimizer = torch.optim.AdamW(param_groups)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
     scaler = torch.amp.GradScaler("cuda", enabled=False)  # Disabled scaler for native bfloat16
+
+    if rank == 0:
+        for group_key, spec in groups.items():
+            logger.info(
+                f"Param group '{group_key}': lr={spec['lr']:.2e} | "
+                f"decay={len(spec['decay'])} tensors | no_decay={len(spec['no_decay'])} tensors"
+            )
 
     # 3. Setup ReXDataset & DataLoaders
     workers = resolve_num_workers(args.num_workers)
@@ -402,6 +459,13 @@ def main() -> None:
     )
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True, drop_last=True) if is_distributed else None
+    # worker_init_fn: MONAI's Randomizable.R is a CLASS variable shared by every transform and
+    # seeded once at import, and plain torch DataLoader never reseeds it per worker -- so all
+    # workers otherwise replay one identical crop/flip stream. monai.data.utils.worker_init_fn
+    # reseeds it from worker_info.seed. Used in preference to monai.data.DataLoader, which would
+    # also swap collate_fn to list_data_collate.
+    # persistent_workers must be guarded: resolve_num_workers returns --num_workers verbatim when
+    # it is >= 0, so 0 is reachable and an unguarded True raises ValueError.
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -410,14 +474,23 @@ def main() -> None:
         num_workers=workers,
         pin_memory=True,
         drop_last=True,
+        worker_init_fn=monai_worker_init_fn,
+        persistent_workers=(workers > 0),
     )
 
+    # batch_size is pinned to 1 here, not args.batch_size. Negative-prompt sampling is gated on
+    # is_train, so a val item emits N = min(F, num_positive_prompts) prompts -- 1 for the 26% of
+    # val scans with a single finding, 2 otherwise -- and default_collate cannot stack a mixed
+    # batch. Padding validation with synthetic negatives would change what the val loss measures,
+    # so the loader stays scan-by-scan; at max_batches=20 this costs nothing.
     val_loader = DataLoader(
         val_dataset,
-        batch_size=args.batch_size,
+        batch_size=1,
         shuffle=False,
         num_workers=workers,
         pin_memory=True,
+        worker_init_fn=monai_worker_init_fn,
+        persistent_workers=(workers > 0),
     )
 
     # 4. Dry Run Mode
@@ -437,7 +510,7 @@ def main() -> None:
             with torch.no_grad():
                 t_embeds = teacher_model(images, text_embeds, return_embeddings=True)
 
-            loss, l_obj, l_con, l_push = compute_spoco_total_loss(
+            loss, l_obj, l_con, l_push, l_neg = compute_spoco_total_loss(
                 student_embeds=s_embeds,
                 teacher_embeds=t_embeds,
                 targets=targets,
@@ -448,6 +521,7 @@ def main() -> None:
                 sigma=args.sigma,
                 w_con=args.w_con,
                 w_unl_push=args.w_unl_push,
+                w_neg=args.w_neg,
                 num_unlabeled_anchors=args.max_unlabeled_anchors,
                 volume_threshold=args.volume_threshold,
                 negative_supervision=True,
@@ -470,7 +544,8 @@ def main() -> None:
         if rank == 0:
             logger.info(
                 f"Dry Run Result: Success={success} | Total Loss: {loss.item():.4f} "
-                f"(L_obj: {l_obj.item():.4f}, L_con: {l_con.item():.4f}, L_push: {l_push.item():.4f})"
+                f"(L_obj: {l_obj.item():.4f}, L_con: {l_con.item():.4f}, "
+                f"L_push: {l_push.item():.4f}, L_neg: {l_neg.item():.4f})"
             )
             logger.info(f"Student Metric Embeddings Shape: {tuple(s_embeds.shape)}")
         cleanup_distributed()
@@ -491,8 +566,25 @@ def main() -> None:
         unwrapped_student = student_model.module if hasattr(student_model, "module") else student_model
         unwrapped_student.load_state_dict(checkpoint["student_state_dict"])
         teacher_model.load_state_dict(checkpoint["teacher_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         start_epoch = checkpoint["epoch"] + 1
+
+        # Only load optimizer state from a checkpoint written under deterministic parameter
+        # ordering. Pre-"ordered_v1" checkpoints were saved with set-ordered groups, so their
+        # moments cannot be mapped back onto the current parameters.
+        if checkpoint.get("param_group_order") == PARAM_GROUP_ORDER:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        elif rank == 0:
+            logger.warning(
+                f"Checkpoint predates deterministic parameter ordering "
+                f"(param_group_order={checkpoint.get('param_group_order')!r}); "
+                f"model weights restored but AdamW moments restart at epoch {start_epoch}."
+            )
+
+        if "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        else:
+            scheduler.last_epoch = start_epoch - 1
+
         best_val_loss = checkpoint.get("best_val_loss", checkpoint.get("val_loss", float("inf")))
         if rank == 0:
             logger.info(f"Successfully resumed at Epoch {start_epoch}, previous best val loss: {best_val_loss:.4f}")
@@ -511,6 +603,7 @@ def main() -> None:
         epoch_obj_sum = 0.0
         epoch_con_sum = 0.0
         epoch_push_sum = 0.0
+        epoch_neg_sum = 0.0
         step_count = 0
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}", disable=(rank != 0))
@@ -529,7 +622,7 @@ def main() -> None:
                 with torch.no_grad():
                     t_embeds = teacher_model(images, text_embeds, return_embeddings=True)
 
-                loss, l_obj, l_con, l_push = compute_spoco_total_loss(
+                loss, l_obj, l_con, l_push, l_neg = compute_spoco_total_loss(
                     student_embeds=s_embeds,
                     teacher_embeds=t_embeds,
                     targets=targets,
@@ -540,6 +633,7 @@ def main() -> None:
                     sigma=args.sigma,
                     w_con=w_con_epoch,
                     w_unl_push=args.w_unl_push,
+                    w_neg=args.w_neg,
                     num_unlabeled_anchors=args.max_unlabeled_anchors,
                     volume_threshold=args.volume_threshold,
                     negative_supervision=True,
@@ -564,6 +658,7 @@ def main() -> None:
                 epoch_obj_sum += l_obj.item()
                 epoch_con_sum += l_con.item()
                 epoch_push_sum += l_push.item()
+                epoch_neg_sum += l_neg.item()
                 step_count += 1
                 total_steps += 1
 
@@ -573,12 +668,22 @@ def main() -> None:
                         "l_obj": f"{l_obj.item():.4f}",
                         "l_con": f"{l_con.item():.4f}",
                         "l_push": f"{l_push.item():.4f}",
+                        "l_neg": f"{l_neg.item():.4f}",
                     })
+
+            # Release the embedding volumes before the next iteration's forward allocates. Each is
+            # (B, N, 32, Z, Y, X) -- ~1.36 GB at B=1, N=3, 192^3 -- and without this both stay
+            # bound until their names are rebound, carrying ~2.7 GB of dead tensor across the loop
+            # boundary on top of peak activation memory.
+            del s_embeds, t_embeds, loss, l_obj, l_con, l_push, l_neg
 
         avg_epoch_loss = epoch_loss_sum / max(1, step_count)
         avg_obj_loss = epoch_obj_sum / max(1, step_count)
         avg_con_loss = epoch_con_sum / max(1, step_count)
         avg_push_loss = epoch_push_sum / max(1, step_count)
+        avg_neg_loss = epoch_neg_sum / max(1, step_count)
+        # Captured before scheduler.step() below, so this is the LR this epoch actually ran at.
+        current_lr = optimizer.param_groups[-1]["lr"]
 
         # Validation Evaluation. Wrapped defensively: an unexpected evaluation-time failure (a
         # malformed val scan, a transient OOM, etc.) must never discard a completed training epoch,
@@ -589,14 +694,16 @@ def main() -> None:
         try:
             val_loss = evaluate_val_loss(
                 model=student_model,
+                teacher_model=teacher_model,
                 val_loader=val_loader,
                 device=device_str,
                 delta_var=args.delta_var,
                 delta_dist=args.delta_dist,
                 pmaps_threshold=args.kernel_threshold,
                 sigma=args.sigma,
-                w_con=args.w_con,
+                w_con=w_con_epoch,
                 w_unl_push=args.w_unl_push,
+                w_neg=args.w_neg,
                 num_unlabeled_anchors=args.max_unlabeled_anchors,
                 volume_threshold=args.volume_threshold,
                 union_target=(args.target_mode == "union"),
@@ -611,8 +718,9 @@ def main() -> None:
         if rank == 0:
             logger.info(
                 f"Epoch {epoch:03d}/{args.epochs:03d} | "
-                f"Train Loss: {avg_epoch_loss:.4f} (Obj: {avg_obj_loss:.4f}, Con: {avg_con_loss:.4f}, Push: {avg_push_loss:.4f}) | "
-                f"w_con: {w_con_epoch:.4f} | Val Loss: {val_loss:.4f}"
+                f"Train Loss: {avg_epoch_loss:.4f} (Obj: {avg_obj_loss:.4f}, Con: {avg_con_loss:.4f}, "
+                f"Push: {avg_push_loss:.4f}, Neg: {avg_neg_loss:.4f}) | "
+                f"w_con: {w_con_epoch:.4f} | LR: {current_lr:.2e} | Val Loss: {val_loss:.4f}"
             )
 
             if args.wandb:
@@ -624,7 +732,9 @@ def main() -> None:
                         "train/obj_loss": avg_obj_loss,
                         "train/con_loss": avg_con_loss,
                         "train/push_loss": avg_push_loss,
+                        "train/neg_loss": avg_neg_loss,
                         "train/w_con": w_con_epoch,
+                        "train/lr": current_lr,
                         "val/loss": val_loss,
                     })
                 except Exception:
@@ -642,6 +752,8 @@ def main() -> None:
                         "student_state_dict": unwrapped_state,
                         "teacher_state_dict": teacher_state,
                         "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "param_group_order": PARAM_GROUP_ORDER,
                         "val_loss": val_loss,
                         "args": vars(args),
                     },
@@ -657,6 +769,7 @@ def main() -> None:
                         "epoch": epoch,
                         "student_state_dict": get_unwrapped_state_dict(student_model),
                         "teacher_state_dict": teacher_model.state_dict(),
+                        "param_group_order": PARAM_GROUP_ORDER,
                         "val_loss": val_loss,
                     },
                     epoch_ckpt_path,
@@ -670,6 +783,8 @@ def main() -> None:
                     "student_state_dict": get_unwrapped_state_dict(student_model),
                     "teacher_state_dict": teacher_model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "param_group_order": PARAM_GROUP_ORDER,
                     "val_loss": val_loss,
                     "best_val_loss": best_val_loss,
                     "args": vars(args),
@@ -677,6 +792,9 @@ def main() -> None:
                 latest_ckpt_path,
             )
             logger.info(f"Updated latest checkpoint: {latest_ckpt_path}")
+
+        # Outside the rank-0 block: every rank must advance the schedule identically.
+        scheduler.step()
 
     if rank == 0:
         logger.info(f"Phase 4 Exp 001 Training Completed across {args.epochs} epochs. Best Val Loss: {best_val_loss:.4f}")

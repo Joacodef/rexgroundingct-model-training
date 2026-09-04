@@ -133,15 +133,25 @@ class ReXDataset(Dataset):
         # MONAI Transform Pipeline
         if self.is_train:
             self.transforms = mt.Compose([
-                mt.SpatialPadd(keys=['image', 'seg'], spatial_size=[patch_size, patch_size, patch_size], mode='constant'),
+                mt.SpatialPadd(keys=['image', 'seg', 'fg_union'], spatial_size=[patch_size, patch_size, patch_size], mode='constant'),
+        # CRITICAL: label_key is the single-channel 'fg_union', NOT 'seg'.
+        # MONAI's map_binary_to_indices assumes a multi-channel label is ONE-HOT with background
+        # in channel 0 and unconditionally executes `label = label[1:]` when shape[0] > 1. Our seg
+        # is (F, Z, Y, X) with one channel per FINDING, so that heuristic silently discarded
+        # channel 0 -- the first sampled positive -- from the foreground pool. A single-finding
+        # scan (1,056 of 2,992 train scans, 35.3%) therefore reported "Num foregrounds 0" and fell
+        # back to a pure background crop with pos_ratio ignored, and a multi-finding scan could
+        # never centre a crop on finding 0. A (1, Z, Y, X) union label sidesteps the heuristic,
+        # since MONAI only drops channel 0 when shape[0] > 1.
                 mt.RandCropByPosNegLabeld(
-                    keys=['image', 'seg'],
-                    label_key='seg',
+                    keys=['image', 'seg', 'fg_union'],
+                    label_key='fg_union',
                     spatial_size=[patch_size, patch_size, patch_size],
                     pos=self.pos_ratio,
                     neg=1.0 - self.pos_ratio,
                     num_samples=1
                 ),
+                mt.DeleteItemsd(keys=['fg_union']),
                 mt.RandFlipd(keys=['image', 'seg'], prob=0.5, spatial_axis=0), # Depth Z-axis
                 mt.RandFlipd(keys=['image', 'seg'], prob=0.5, spatial_axis=1), # Antero-Posterior Y-axis
                 # CRITICAL DIRECTIVE: Left-Right flip (spatial_axis=2) is omitted to preserve anatomical laterality
@@ -158,15 +168,25 @@ class ReXDataset(Dataset):
             # patch a fixed size but not deterministic in location across calls/epochs, since
             # RandCropByPosNegLabeld samples a random pos/neg crop position each time it runs.
             self.transforms = mt.Compose([
-                mt.SpatialPadd(keys=['image', 'seg'], spatial_size=[patch_size, patch_size, patch_size], mode='constant'),
+                mt.SpatialPadd(keys=['image', 'seg', 'fg_union'], spatial_size=[patch_size, patch_size, patch_size], mode='constant'),
+        # CRITICAL: label_key is the single-channel 'fg_union', NOT 'seg'.
+        # MONAI's map_binary_to_indices assumes a multi-channel label is ONE-HOT with background
+        # in channel 0 and unconditionally executes `label = label[1:]` when shape[0] > 1. Our seg
+        # is (F, Z, Y, X) with one channel per FINDING, so that heuristic silently discarded
+        # channel 0 -- the first sampled positive -- from the foreground pool. A single-finding
+        # scan (1,056 of 2,992 train scans, 35.3%) therefore reported "Num foregrounds 0" and fell
+        # back to a pure background crop with pos_ratio ignored, and a multi-finding scan could
+        # never centre a crop on finding 0. A (1, Z, Y, X) union label sidesteps the heuristic,
+        # since MONAI only drops channel 0 when shape[0] > 1.
                 mt.RandCropByPosNegLabeld(
-                    keys=['image', 'seg'],
-                    label_key='seg',
+                    keys=['image', 'seg', 'fg_union'],
+                    label_key='fg_union',
                     spatial_size=[patch_size, patch_size, patch_size],
                     pos=self.pos_ratio,
                     neg=1.0 - self.pos_ratio,
                     num_samples=1
                 ),
+                mt.DeleteItemsd(keys=['fg_union']),
                 mt.EnsureTyped(keys=['image', 'seg'], dtype=torch.float32)
             ])
 
@@ -200,7 +220,11 @@ class ReXDataset(Dataset):
         Outputs:
             dict: Data dictionary containing 'image', 'seg', 'text_embeddings',
                 'is_absent_finding' (bool tensor, True only for sampled negative prompts),
-                and 'scan_id'.
+                and 'scan_id'. During training with num_negative_prompts > 0 the prompt axis is
+                a fixed N = num_positive_prompts + num_negative_prompts, so batches collate at
+                any batch_size; on the validation path (and when num_negative_prompts == 0) it
+                is min(F, num_positive_prompts) and varies per scan, so those loaders must use
+                batch_size=1.
         """
         entry = self.entries[idx]
         scan_id = entry['name'].replace('.nii.gz', '')
@@ -294,10 +318,25 @@ class ReXDataset(Dataset):
             pos_text_embeddings = text_embeddings
             pos_seg_cropped = seg_cropped
 
-        # Sample negative prompts during training (teaching empty-mask output on absent findings)
+        # Pad to a FIXED prompt count N = num_positive_prompts + num_negative_prompts.
+        # 1,056 of the 2,992 training scans hold a single finding, so without padding an item
+        # emits N=2 while the rest emit N=3, and torch's default_collate raises
+        # "stack expects each tensor to be equal size" on any batch_size > 1 that mixes them --
+        # roughly 46% of random pairs. The shortfall is made up with ADDITIONAL sampled negatives
+        # rather than repeated positives: a sampled negative is genuinely absent from this scan,
+        # so `is_absent_finding` stays literally true and no lesion is counted twice in the loss.
+        # The trade-off is that single-finding scans now train at 1 positive + 2 negatives instead
+        # of 1 + 1. Padding is skipped entirely when num_negative_prompts == 0, since injecting
+        # negatives would contradict that setting; N stays variable in that configuration.
         if self.is_train and self.num_negative_prompts > 0:
+            num_negatives = self.num_negative_prompts + (self.num_positive_prompts - pos_text_embeddings.shape[0])
+        else:
+            num_negatives = 0
+
+        # Sample negative prompts during training (teaching empty-mask output on absent findings)
+        if num_negatives > 0:
             neg_embeds_list = []
-            for _ in range(self.num_negative_prompts):
+            for _ in range(num_negatives):
                 if len(self.entries) > 1:
                     neg_idx = (idx + np.random.randint(1, len(self.entries))) % len(self.entries)
                 else:
@@ -334,9 +373,15 @@ class ReXDataset(Dataset):
         if num_absent > 0:
             is_absent_finding[-num_absent:] = True
 
+        # Single-channel foreground union driving crop-centre selection. uint8 keeps the extra
+        # full-resolution volume small (~78 MB for 512x512x300) until the crop shrinks it, and it
+        # is deleted from the dict immediately after. See the label_key note in __init__.
+        fg_union = (seg_cropped > 0).any(dim=0, keepdim=True).to(torch.uint8)
+
         data_dict = {
             'image': img_normalized,
-            'seg': seg_cropped
+            'seg': seg_cropped,
+            'fg_union': fg_union
         }
 
         # Both branches now run a RandCropByPosNegLabeld(num_samples=1) pipeline, which always

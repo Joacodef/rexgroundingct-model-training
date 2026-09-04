@@ -168,7 +168,7 @@ def test_spoco_total_loss_gradient_flow():
     targets[0, 0, 10:13, 10:13, 10:13] = 1.0
     # Finding 1 is a negative absent finding
 
-    total_loss, l_obj, l_con, l_push = compute_spoco_total_loss(
+    total_loss, l_obj, l_con, l_push, l_neg = compute_spoco_total_loss(
         student_embeds=student_embeds,
         teacher_embeds=teacher_embeds,
         targets=targets,
@@ -185,6 +185,10 @@ def test_spoco_total_loss_gradient_flow():
     assert torch.isfinite(l_obj)
     assert torch.isfinite(l_con)
     assert torch.isfinite(l_push)
+    assert torch.isfinite(l_neg)
+    # Finding 1 is a confirmed-absent prompt, so its null-target penalty now lands in l_neg
+    # rather than being averaged into l_obj alongside soft-Dice terms.
+    assert l_neg.item() > 0
 
     total_loss.backward()
     assert student_embeds.grad is not None
@@ -204,20 +208,24 @@ def test_spoco_is_absent_flag_skips_out_of_crop_positive():
 
     # With the flag: only the negative prompt contributes (negative supervision); the
     # out-of-crop positive is skipped.
-    total_flag, l_obj_flag, _, _ = compute_spoco_total_loss(
+    total_flag, l_obj_flag, _, _, l_neg_flag = compute_spoco_total_loss(
         student_embeds=student_embeds, teacher_embeds=teacher_embeds, targets=targets,
         is_absent=is_absent, return_details=True,
     )
     # Legacy behavior (no flag): both empty targets are treated as absent -> both penalized.
-    total_legacy, l_obj_legacy, _, _ = compute_spoco_total_loss(
+    total_legacy, l_obj_legacy, _, _, l_neg_legacy = compute_spoco_total_loss(
         student_embeds=student_embeds, teacher_embeds=teacher_embeds, targets=targets,
         is_absent=None, return_details=True,
     )
 
     assert torch.isfinite(total_flag) and torch.isfinite(total_legacy)
-    # The flagged run sees strictly fewer negative-supervision terms, so its L_obj is
-    # computed over one prompt instead of two (values differ; both are valid means).
-    assert l_obj_flag.item() >= 0.0
+    # Null-target penalties now accumulate in L_neg, not L_obj. Neither run has a single
+    # present-and-in-crop prompt, so both L_obj values are the grad-carrying zero and the
+    # discrimination has to be read off L_neg instead.
+    assert l_obj_flag.item() == 0.0 and l_obj_legacy.item() == 0.0
+    # The flagged run penalises one prompt; the legacy run misreads the out-of-crop positive as
+    # absent and penalises both.
+    assert l_neg_flag.item() > 0.0 and l_neg_legacy.item() > 0.0
     total_flag.backward()
     assert torch.isfinite(student_embeds.grad).all()
 
@@ -252,11 +260,11 @@ def test_union_target_penalizes_missed_sibling_instance():
     student_embeds = embeds.unsqueeze(0).unsqueeze(0)  # (B=1, N=1, D, Z, Y, X)
     targets = target_mask.unsqueeze(0).unsqueeze(0)    # (B=1, N=1, Z, Y, X)
 
-    _, l_obj_union, _, _ = compute_spoco_total_loss(
+    _, l_obj_union, _, _, _ = compute_spoco_total_loss(
         student_embeds=student_embeds, teacher_embeds=student_embeds, targets=targets,
         delta_var=0.5, union_target=True, return_details=True,
     )
-    _, l_obj_instance, _, _ = compute_spoco_total_loss(
+    _, l_obj_instance, _, _, _ = compute_spoco_total_loss(
         student_embeds=student_embeds, teacher_embeds=student_embeds, targets=targets,
         delta_var=0.5, union_target=False, return_details=True,
     )
@@ -288,11 +296,11 @@ def test_union_target_rewards_unified_cluster():
     student_embeds = embeds.unsqueeze(0).unsqueeze(0)
     targets = target_mask.unsqueeze(0).unsqueeze(0)
 
-    _, l_obj_union, _, _ = compute_spoco_total_loss(
+    _, l_obj_union, _, _, _ = compute_spoco_total_loss(
         student_embeds=student_embeds, teacher_embeds=student_embeds, targets=targets,
         delta_var=0.5, union_target=True, return_details=True,
     )
-    _, l_obj_instance, _, _ = compute_spoco_total_loss(
+    _, l_obj_instance, _, _, _ = compute_spoco_total_loss(
         student_embeds=student_embeds, teacher_embeds=student_embeds, targets=targets,
         delta_var=0.5, union_target=False, return_details=True,
     )

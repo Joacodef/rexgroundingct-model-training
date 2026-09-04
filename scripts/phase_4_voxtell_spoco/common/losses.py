@@ -45,6 +45,37 @@ def _confirmed_background_mask(target_mask: torch.Tensor, roi_dilation_voxels: i
     return torch.from_numpy(~fg_np).to(device=target_mask.device)
 
 
+def _unit_sphere_dist_sq(
+    anchor_vecs: torch.Tensor,
+    embeddings: torch.Tensor,
+    subscripts: str,
+) -> torch.Tensor:
+    """
+    Signature:
+        _unit_sphere_dist_sq(anchor_vecs: torch.Tensor, embeddings: torch.Tensor, subscripts: str) -> torch.Tensor
+
+    Objective:
+        Compute the squared Euclidean distance ||e_i - a_k||^2 = 2 - 2 <e_i, a_k> between anchor
+        vectors and dense embeddings, both assumed L2-normalized onto the unit hypersphere S^31.
+        The contraction is forced to float32 even under bfloat16 autocast: bf16 has 7 stored
+        mantissa bits, so its spacing at 1.0 is 2^-7 = 0.0078125, and `2 - 2*dot` is a
+        cancellation that quantizes every true squared distance below ~0.004 to exactly 0. That
+        pins the soft mask at 1.0 with an identically zero gradient across the whole tight-cluster
+        regime the L_obj pull term exists to sharpen.
+
+    Inputs:
+        anchor_vecs (torch.Tensor): Anchor embedding vectors, (K, D) or (D,).
+        embeddings (torch.Tensor): Dense embeddings, (D, Z, Y, X) or (D, S).
+        subscripts (str): einsum contraction string pairing the two operands, e.g. "kd, dzyx -> kzyx".
+
+    Outputs:
+        torch.Tensor: Non-negative float32 squared distances, shaped by `subscripts`.
+    """
+    with torch.autocast(device_type=embeddings.device.type, enabled=False):
+        dot_prod = torch.einsum(subscripts, anchor_vecs.float(), embeddings.float())
+        return torch.clamp(2.0 - 2.0 * dot_prod, min=0.0)
+
+
 def compute_gaussian_soft_mask(
     embeddings: torch.Tensor,
     anchor_coords: torch.Tensor,
@@ -70,13 +101,13 @@ def compute_gaussian_soft_mask(
         sigma (float | None): Optional legacy sigma override. If provided, two_sigma = 2 * sigma^2.
 
     Outputs:
-        torch.Tensor: Soft mask tensor of shape (K, Z, Y, X) in range [0, 1].
+        torch.Tensor: Float32 soft mask tensor of shape (K, Z, Y, X) in range [0, 1].
     """
     D, Z, Y, X = embeddings.shape
     K = anchor_coords.shape[0]
 
     if K == 0:
-        return torch.zeros((0, Z, Y, X), device=embeddings.device, dtype=embeddings.dtype)
+        return torch.zeros((0, Z, Y, X), device=embeddings.device, dtype=torch.float32)
 
     # Resolve Gaussian variance parameter
     if sigma is not None:
@@ -91,11 +122,10 @@ def compute_gaussian_soft_mask(
         anchor_embeds.append(embeddings[:, az, ay, ax])
     anchor_embeds = torch.stack(anchor_embeds, dim=0)  # (K, D)
 
-    # Compute Euclidean distance: ||e_i - e(a_k)||^2 = 2 - 2 * (e_i . e(a_k)) on unit sphere
-    dot_prod = torch.einsum("kd, dzyx -> kzyx", anchor_embeds, embeddings)
-    dist_sq = torch.clamp(2.0 - 2.0 * dot_prod, min=0.0)
+    # Euclidean distance on the unit sphere, in float32 (see _unit_sphere_dist_sq).
+    dist_sq = _unit_sphere_dist_sq(anchor_embeds, embeddings, "kd, dzyx -> kzyx")
 
-    # Gaussian soft mask
+    # Gaussian soft mask (float32, so the returned mask is float32 regardless of autocast)
     soft_masks = torch.exp(-dist_sq / max(1e-8, two_sigma))
     return soft_masks
 
@@ -196,36 +226,37 @@ def sample_unannotated_anchors(
         list[tuple[int, int, int]]: List of (z, y, x) anchor coordinates in unannotated regions.
     """
     unlabeled_mask = _confirmed_background_mask(target_mask, roi_dilation_voxels)
-    total_unlabeled = unlabeled_mask.sum().item()
+
+    # Materialize the candidate coordinates ONCE. The previous form re-ran torch.nonzero over the
+    # full (Z, Y, X) volume on every anchor iteration, re-allocating an (N, 3) int64 tensor
+    # (~170 MB at 192^3) each time. Suppression state is now a boolean vector over this fixed
+    # array, so each iteration touches only an (N,) bool and an (M,) index tensor.
+    candidate_coords = torch.nonzero(unlabeled_mask, as_tuple=False)  # (N, 3)
+    total_unlabeled = candidate_coords.shape[0]
     if total_unlabeled == 0:
         return []
+
+    cz, cy, cx = candidate_coords[:, 0], candidate_coords[:, 1], candidate_coords[:, 2]
+    active = torch.ones(total_unlabeled, dtype=torch.bool, device=candidate_coords.device)
 
     anchors = []
     delta_var_sq = delta_var ** 2
 
     for _ in range(num_anchors):
-        current_unlabeled_count = unlabeled_mask.sum().item()
-        if current_unlabeled_count < volume_threshold * total_unlabeled:
+        active_idx = torch.nonzero(active, as_tuple=False).flatten()  # (M,)
+        if active_idx.numel() < volume_threshold * total_unlabeled:
             break
 
-        unlabeled_coords = torch.nonzero(unlabeled_mask)
-        if len(unlabeled_coords) == 0:
-            break
-
-        # Sample candidate anchor at random from active unannotated pool
-        rand_idx = torch.randint(0, len(unlabeled_coords), (1,)).item()
-        anchor = tuple(int(x) for x in unlabeled_coords[rand_idx].tolist())
-        anchors.append(anchor)
+        # Sample candidate anchor at random from the active unannotated pool
+        rand_pos = torch.randint(0, active_idx.numel(), (1,), device=active_idx.device)
+        az, ay, ax = (int(v) for v in candidate_coords[active_idx[rand_pos[0]]].tolist())
+        anchors.append((az, ay, ax))
 
         # Vectorized neighborhood suppression on unit sphere: dist_sq < delta_var_sq
-        az, ay, ax = anchor
-        anchor_vec = embeddings[:, az, ay, ax]  # (D,)
-        dot_prod = torch.einsum("d, dzyx -> zyx", anchor_vec, embeddings)
-        dist_sq = torch.clamp(2.0 - 2.0 * dot_prod, min=0.0)
+        dist_sq = _unit_sphere_dist_sq(embeddings[:, az, ay, ax], embeddings, "d, dzyx -> zyx")
 
-        # Suppress covered neighborhood from subsequent anchor candidate pool
-        suppress_mask = dist_sq < delta_var_sq
-        unlabeled_mask[suppress_mask] = False
+        # Suppress the covered neighborhood from the subsequent candidate pool
+        active &= ~(dist_sq[cz, cy, cx] < delta_var_sq)
 
     return anchors
 
@@ -248,8 +279,11 @@ def compute_instance_dice_loss(
     Outputs:
         torch.Tensor: Scalar Dice loss tensor in range [0, 1].
     """
-    intersection = (soft_mask * target_mask).sum().float()
-    union = soft_mask.sum().float() + target_mask.sum().float()
+    # Cast BEFORE reducing, not after: a bf16 reduction returns a bf16 scalar, so a
+    # background-dominated sum of order 1e6 keeps only 8 mantissa bits and snaps to
+    # multiples of ~8192. `.sum().float()` widens one operation too late.
+    intersection = (soft_mask.float() * target_mask.float()).sum()
+    union = soft_mask.float().sum() + target_mask.float().sum()
     return 1.0 - (2.0 * intersection + 1e-6) / (union + 1e-6)
 
 
@@ -312,9 +346,9 @@ def compute_unlabeled_push_loss(
 
     push_losses = []
     for az, ay, ax in instance_anchors:
-        anchor_vec = embeddings[:, az, ay, ax]  # (D,)
-        dot_prod = torch.einsum("d, ds -> s", anchor_vec, bg_embeds)  # (S,)
-        dist = torch.sqrt(torch.clamp(2.0 - 2.0 * dot_prod, min=1e-8))  # (S,)
+        # min=1e-8 (not 0) keeps sqrt differentiable at coincident embeddings.
+        dist_sq = _unit_sphere_dist_sq(embeddings[:, az, ay, ax], bg_embeds, "d, ds -> s")
+        dist = torch.sqrt(torch.clamp(dist_sq, min=1e-8))  # (S,)
         hinged_push = torch.clamp(delta_dist - dist, min=0.0) ** 2  # (S,)
         push_losses.append(hinged_push.mean())
 
@@ -332,6 +366,7 @@ def compute_spoco_total_loss(
     sigma: Optional[float] = None,
     w_con: float = 0.1,
     w_unl_push: float = 0.1,
+    w_neg: float = 1.0,
     num_unlabeled_anchors: int = 8,
     volume_threshold: float = 0.05,
     negative_supervision: bool = True,
@@ -342,13 +377,22 @@ def compute_spoco_total_loss(
 ) -> Any:
     """
     Signature:
-        compute_spoco_total_loss(student_embeds: torch.Tensor, teacher_embeds: torch.Tensor, targets: torch.Tensor, is_absent: torch.Tensor | None = None, delta_var: float = 0.5, delta_dist: float = 1.5, pmaps_threshold: float = 0.5, sigma: float | None = None, w_con: float = 0.1, w_unl_push: float = 0.1, num_unlabeled_anchors: int = 8, volume_threshold: float = 0.05, negative_supervision: bool = True, max_annotated_components: int = 8, roi_dilation_voxels: int = 2, union_target: bool = True, return_details: bool = False) -> tuple
+        compute_spoco_total_loss(student_embeds: torch.Tensor, teacher_embeds: torch.Tensor, targets: torch.Tensor, is_absent: torch.Tensor | None = None, delta_var: float = 0.5, delta_dist: float = 1.5, pmaps_threshold: float = 0.5, sigma: float | None = None, w_con: float = 0.1, w_unl_push: float = 0.1, w_neg: float = 1.0, num_unlabeled_anchors: int = 8, volume_threshold: float = 0.05, negative_supervision: bool = True, max_annotated_components: int = 8, roi_dilation_voxels: int = 2, union_target: bool = True, return_details: bool = False) -> tuple
 
     Objective:
         Compute full 3D SPOCO loss: Instance-level soft Dice on annotated objects (L_obj),
         Unannotated Anchor Consistency (L_con) against EMA Teacher with iterative coverage suppression,
-        Unlabeled Background Push repulsion (L_unl_push), and optional null-target supervision
-        on confirmed absent findings.
+        Unlabeled Background Push repulsion (L_unl_push), and null-target supervision on confirmed
+        absent findings (L_neg).
+
+        L_obj and L_neg are reduced SEPARATELY and combined with an explicit w_neg. They used to
+        share one list and one mean, but they are not the same quantity -- L_obj terms are soft
+        Dice in [0, 1] while L_neg terms are raw Gaussian soft-mask mass (order 1e-3). Averaging
+        them together made the balance between positive supervision and negative suppression a
+        function of how many terms each happened to contribute in a given batch, which swings with
+        how many positive prompts survived the random crop and how many components each held. It
+        also made the training L_obj incomparable to the validation L_obj, since validation samples
+        no negative prompts at all.
 
         Each (b, n) prompt is routed by whether the finding is genuinely absent from the
         scan (`is_absent`), NOT by whether its target happens to be empty in the crop:
@@ -369,6 +413,10 @@ def compute_spoco_total_loss(
         sigma (float | None): Optional legacy sigma override.
         w_con (float): Consistency loss weight for unannotated anchors (default 0.1).
         w_unl_push (float): Unlabeled background push weight (default 0.1).
+        w_neg (float): Weight on the confirmed-absent null-target term L_neg (default 1.0). The
+            default is a starting point rather than a calibrated value: L_neg is roughly three
+            orders of magnitude smaller than a Dice term, so w_neg = 1.0 makes negative
+            supervision far weaker than the old implicit weighting. Log L_neg and tune from there.
         num_unlabeled_anchors (int): Maximum unlabeled anchors sampled per finding (default 8).
         volume_threshold (float): Stopping fraction for unlabeled coverage (default 0.05).
         negative_supervision (bool): Penalize false-positive anchor masks on absent findings (default True).
@@ -394,10 +442,11 @@ def compute_spoco_total_loss(
             and septal thickening (7.82) already exceed the cap of 8 routinely. Set False to
             recover the original per-instance behavior (each anchor's Dice scored only against
             its own connected component) for an explicit instance-vs-union ablation.
-        return_details (bool): If True, returns (total_loss, l_obj, l_con, l_push). Otherwise (total_loss, l_obj, l_con).
+        return_details (bool): If True, returns (total_loss, l_obj, l_con, l_push, l_neg). Otherwise (total_loss, l_obj, l_con).
 
     Outputs:
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: Loss components.
+        tuple[torch.Tensor, ...]: (total_loss, l_obj, l_con) or, with return_details,
+        (total_loss, l_obj, l_con, l_push, l_neg).
     """
     B, N_prompts, D, Z, Y, X = student_embeds.shape
     device = student_embeds.device
@@ -405,6 +454,7 @@ def compute_spoco_total_loss(
     loss_obj_list = []
     loss_con_list = []
     loss_push_list = []
+    loss_neg_list = []
 
     for b in range(B):
         for n in range(N_prompts):
@@ -513,7 +563,7 @@ def compute_spoco_total_loss(
                             pmaps_threshold=pmaps_threshold,
                             sigma=sigma,
                         )
-                        loss_obj_list.append(s_neg_soft.mean())
+                        loss_neg_list.append(s_neg_soft.mean())
 
     # A zero that still carries a grad_fn back to `student_embeds`, so that a step in
     # which every prompt was skipped (e.g. a crop where all positives fell out of frame)
@@ -523,9 +573,10 @@ def compute_spoco_total_loss(
     loss_obj = torch.stack(loss_obj_list).mean() if loss_obj_list else zero
     loss_con = torch.stack(loss_con_list).mean() if loss_con_list else zero
     loss_push = torch.stack(loss_push_list).mean() if loss_push_list else zero
+    loss_neg = torch.stack(loss_neg_list).mean() if loss_neg_list else zero
 
-    total_loss = loss_obj + (w_con * loss_con) + (w_unl_push * loss_push)
+    total_loss = loss_obj + (w_con * loss_con) + (w_unl_push * loss_push) + (w_neg * loss_neg)
 
     if return_details:
-        return total_loss, loss_obj, loss_con, loss_push
+        return total_loss, loss_obj, loss_con, loss_push, loss_neg
     return total_loss, loss_obj, loss_con

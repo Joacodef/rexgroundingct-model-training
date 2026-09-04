@@ -31,6 +31,11 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+# MONAI's Randomizable.R is a CLASS variable shared by every transform and seeded once at import;
+# plain torch DataLoader never reseeds it per worker, so all workers otherwise replay one
+# identical crop/flip stream. This reseeds it from worker_info.seed. Preferred over
+# monai.data.DataLoader, which would also swap collate_fn to list_data_collate.
+from monai.data.utils import worker_init_fn as monai_worker_init_fn
 from tqdm import tqdm
 
 # Resolve repository root
@@ -114,15 +119,27 @@ def compute_roi_masked_loss(logits: torch.Tensor, targets: torch.Tensor, roi_mas
     intersection = (probs_masked * targets_masked).sum(dim=(2, 3, 4)).float()
     union = probs_masked.sum(dim=(2, 3, 4)).float() + targets_masked.sum(dim=(2, 3, 4)).float()
     dice = 1.0 - (2.0 * intersection + 1e-6) / (union + 1e-6)
-    
-    return bce_masked + dice.mean()
+
+    # Average Dice only over channels that actually carry an ROI. A channel whose ROI mask is
+    # empty scores 1 - (0 + 1e-6)/(0 + 1e-6) = exactly 0 and, counted in the denominator, silently
+    # scales the real supervised Dice by the fraction of prompts that caught foreground in this
+    # crop. That fraction swings item to item, so it is a moving weight on the loss rather than a
+    # constant. Without this, excluding a prompt by emptying its ROI would not actually exclude it.
+    roi_per_channel = roi_mask.sum(dim=(2, 3, 4))  # (B, F)
+    active_channels = roi_per_channel > 0
+    if bool(active_channels.any()):
+        dice_term = dice[active_channels].mean()
+    else:
+        dice_term = logits.sum() * 0.0  # grad-carrying zero: keeps backward valid on an all-empty batch
+
+    return bce_masked + dice_term
 
 
 
-def compute_unannotated_consistency_loss(student_probs: torch.Tensor, teacher_probs: torch.Tensor, roi_mask: torch.Tensor) -> torch.Tensor:
+def compute_unannotated_consistency_loss(student_probs: torch.Tensor, teacher_probs: torch.Tensor, roi_mask: torch.Tensor, valid_mask: torch.Tensor | None = None) -> torch.Tensor:
     """
     Signature:
-        compute_unannotated_consistency_loss(student_probs: torch.Tensor, teacher_probs: torch.Tensor, roi_mask: torch.Tensor) -> torch.Tensor
+        compute_unannotated_consistency_loss(student_probs: torch.Tensor, teacher_probs: torch.Tensor, roi_mask: torch.Tensor, valid_mask: torch.Tensor | None = None) -> torch.Tensor
 
     Objective:
         Compute Mean Squared Error (MSE) consistency loss across unannotated background voxels outside the dilated ROI.
@@ -131,11 +148,18 @@ def compute_unannotated_consistency_loss(student_probs: torch.Tensor, teacher_pr
         student_probs (torch.Tensor): Student network probability predictions (B, F, Z, Y, X).
         teacher_probs (torch.Tensor): Teacher network probability predictions (B, F, Z, Y, X).
         roi_mask (torch.Tensor): Dilated boolean ROI mask tensor isolating annotated regions.
+        valid_mask (torch.Tensor | None): Optional broadcastable bool mask of prompts that carry a
+            usable signal. Required whenever a prompt is dropped by emptying its ROI: the
+            background is the COMPLEMENT of the ROI, so a dropped prompt would otherwise receive
+            full-volume consistency supervision -- the exact opposite of being skipped.
 
     Outputs:
         torch.Tensor: Scalar MSE consistency loss over unannotated voxels.
     """
-    bg_mask = (~roi_mask).float()
+    bg_mask = ~roi_mask
+    if valid_mask is not None:
+        bg_mask = bg_mask & valid_mask
+    bg_mask = bg_mask.float()
     diff_sq = (student_probs - teacher_probs) ** 2
     loss_con = (diff_sq * bg_mask).sum() / (bg_mask.sum() + 1e-6)
     return loss_con
@@ -300,17 +324,33 @@ def train_pu_epoch(
                 teacher_logits = teacher_model(images, text_embeds)
                 teacher_probs = torch.sigmoid(teacher_logits)
                 
-            # Compute dilated ROI mask for positive findings; for negative findings (confirmed absent),
-            # enforce full-volume supervision to penalize false positive hallucinations and disable consistency loss.
-            is_positive = (targets.sum(dim=(2, 3, 4), keepdim=True) > 0)
+            # Route each prompt by whether the finding is genuinely absent from the SCAN, not by
+            # whether its target happens to be empty in this crop. ReXDataset already emits
+            # `is_absent_finding`; the previous `targets.sum() > 0` test conflated "confirmed
+            # absent" with "present, but the lesion fell outside this 192^3 window", then widened
+            # that prompt's ROI to the entire volume and supervised it as background under
+            # pos_weight=10 -- actively penalising the model for a lesion that is really there.
+            # With pos_ratio=0.85 at least 15% of items are pure-background crops in which EVERY
+            # positive prompt looks empty, and the true rate is higher because the crop is centred
+            # on the union foreground, so one finding of several is typically in frame.
+            has_fg = (targets.sum(dim=(2, 3, 4), keepdim=True) > 0)
+            if "is_absent_finding" in batch:
+                is_absent = batch["is_absent_finding"].to(device).view(*targets.shape[:2], 1, 1, 1)
+            else:
+                is_absent = ~has_fg  # backward-compatible fallback for batches predating the flag
+            supervise = is_absent | has_fg  # present-but-out-of-crop carries no signal either way
+
             roi_mask = compute_roi_mask(targets, kernel_size=11, padding=5)
-            roi_mask = torch.where(is_positive, roi_mask, torch.ones_like(roi_mask, dtype=torch.bool))
+            # confirmed absent      -> full-volume suppression (penalise hallucinated mass)
+            # present, in crop      -> dilated ROI
+            # present, out of crop  -> empty ROI, i.e. dropped from the supervised loss entirely
+            roi_mask = torch.where(is_absent, torch.ones_like(roi_mask), roi_mask) & supervise
             
             # Supervised loss strictly within ROI (or full volume for negative prompts)
             loss_sup = compute_roi_masked_loss(student_logits.float(), targets.float(), roi_mask, pos_weight=pos_weight)
             
             # Consistency regularization on unannotated voxels
-            loss_con = compute_unannotated_consistency_loss(student_probs.float(), teacher_probs.float(), roi_mask)
+            loss_con = compute_unannotated_consistency_loss(student_probs.float(), teacher_probs.float(), roi_mask, valid_mask=supervise)
             
             # Combined loss
             total_loss = loss_sup + w_con * loss_con
@@ -430,7 +470,8 @@ def main() -> None:
                 num_workers=resolved_workers,
                 pin_memory=torch.cuda.is_available(),
                 persistent_workers=(resolved_workers > 0),
-                prefetch_factor=2 if resolved_workers > 0 else None
+                prefetch_factor=2 if resolved_workers > 0 else None,
+                worker_init_fn=monai_worker_init_fn
             )
         else:
             train_sampler = None
@@ -441,7 +482,8 @@ def main() -> None:
                 num_workers=resolved_workers,
                 pin_memory=torch.cuda.is_available(),
                 persistent_workers=(resolved_workers > 0),
-                prefetch_factor=2 if resolved_workers > 0 else None
+                prefetch_factor=2 if resolved_workers > 0 else None,
+                worker_init_fn=monai_worker_init_fn
             )
         
         logger.info(f"Loaded training split: {len(train_dataset)} total scans.")

@@ -35,6 +35,11 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+# MONAI's Randomizable.R is a CLASS variable shared by every transform and seeded once at import;
+# plain torch DataLoader never reseeds it per worker, so all workers otherwise replay one
+# identical crop/flip stream. This reseeds it from worker_info.seed. Preferred over
+# monai.data.DataLoader, which would also swap collate_fn to list_data_collate.
+from monai.data.utils import worker_init_fn as monai_worker_init_fn
 from tqdm import tqdm
 from monai.losses import DiceLoss
 
@@ -310,7 +315,8 @@ def main() -> None:
                 num_workers=resolved_workers,
                 pin_memory=torch.cuda.is_available(),
                 persistent_workers=(resolved_workers > 0),
-                prefetch_factor=2 if resolved_workers > 0 else None
+                prefetch_factor=2 if resolved_workers > 0 else None,
+                worker_init_fn=monai_worker_init_fn
             )
         else:
             train_sampler = None
@@ -321,7 +327,8 @@ def main() -> None:
                 num_workers=resolved_workers,
                 pin_memory=torch.cuda.is_available(),
                 persistent_workers=(resolved_workers > 0),
-                prefetch_factor=2 if resolved_workers > 0 else None
+                prefetch_factor=2 if resolved_workers > 0 else None,
+                worker_init_fn=monai_worker_init_fn
             )
         
         logger.info(f"Loaded training split: {len(train_dataset)} total scans.")

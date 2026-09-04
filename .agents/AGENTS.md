@@ -31,10 +31,10 @@ To prevent hallucinated or outdated AI summaries from superseding ground-truth s
 
 ### 1. Workload Execution & Compute Allocation Contract
 
-#### A. SLURM-Governed Production Clusters (e.g. `peteroa`)
+#### A. SLURM-Governed Production Clusters
 * **Mandatory SLURM Submission (`sbatch`)**: On compute nodes governed by SLURM cgroups, **NEVER run training loops, batch inferences, multi-scan evaluations, or persistent Python jobs directly on the host or login shell**. Unallocated GPU compute running directly on the host is strictly prohibited and will be terminated by the cluster resource controller or node watchdog.
 * **Batch Workloads (`sbatch`)**: All production training, fine-tuning, and multi-scan batch inference runs MUST be submitted via SLURM (`sbatch bash_scripts/<job_script>.slurm`).
-* **Interactive Debugging (`srun` + `tmux`)**: For interactive debugging, allocate an interactive GPU shell via `srun` (with project account and QoS flags per `CLUSTER_SETUP.md`), and run commands inside a named `tmux` session within that allocated container.
+* **Interactive Debugging (`srun` + `tmux`)**: For interactive debugging, allocate an interactive GPU shell via `srun` (with appropriate project account and QoS flags per the host's cluster documentation or local `STATUS.md`), and run commands inside a named `tmux` session within that allocated container.
 * **Job Monitoring**: Monitor jobs via `squeue -u <user>` and inspect output logs in `logs/<phase>/<exp_name>/slurm_<job_id>.out`.
 
 #### B. Standalone Development & Prototyping Nodes (Non-SLURM)
@@ -43,7 +43,7 @@ To prevent hallucinated or outdated AI summaries from superseding ground-truth s
   * **Inspection**: `tmux attach -t <session_name>` or `tmux ls`
 
 ### 2. Hardware Isolation Contract
-* All fine-tuning and inference operations must respect host GPU isolation managed via environment variables (`CUDA_VISIBLE_DEVICES=1`), as detailed in local `server_documentation.txt` and `STATUS.md`.
+* All fine-tuning and inference operations must respect host GPU isolation managed via environment variables (e.g. `CUDA_VISIBLE_DEVICES`), as detailed in the active host's local `STATUS.md` or environment configuration.
 
 ### 3. Fast Storage Caching
 * Preprocessed training inputs should reside in fast local temporary storage (`/tmp/rexgroundingct_preprocessed/` or fast SSD cache) to bypass slow CPU decompression bounds.
@@ -60,13 +60,13 @@ To prevent hallucinated or outdated AI summaries from superseding ground-truth s
 * **MONAI Framework Preference Contract**: Wherever reasonable and applicable (such as GPU-accelerated spatial resampling, intensity normalization, transform pipelines, and deep learning preprocessing), MONAI (`monai.transforms`) should be preferred for 3D medical image and mask operations, provided it respects the centralized spatial engine contracts in `scripts/common/orientation.py`.
 
 ### 6. Environment & Virtualenv Contract (No Conda Environments)
-* **Strictly Prohibited: Conda Environments**: NEVER create or invoke Conda environments (`conda create`, `conda activate`, `/miniconda3/envs/...`). All execution, script runs, package management, and test invocations MUST strictly use the project's local virtual environment (`.venv/bin/python` or `uv`). The primary environment is `.venv` located at the repository root, pre-configured with PyTorch 2.8.0+cu128 and full hardware acceleration for all available compute devices (including NVIDIA H100 `sm_90` and RTX PRO 6000 `sm_120`).
+* **Strictly Prohibited: Conda Environments**: NEVER create or invoke Conda environments (`conda create`, `conda activate`, `/miniconda3/envs/...`). All execution, script runs, package management, and test invocations MUST strictly use the project's local virtual environment (`.venv/bin/python` or `uv`). The primary environment is `.venv` located at the repository root, pre-configured with PyTorch 2.8.0+cu128 and full hardware acceleration for all available compute devices.
 
 ### 7. Multi-Host Cluster Governance & Server Role Specialization
-* **Shared Repository Multi-Server Topology**: Multiple server instances (e.g. `peteroa` and other development nodes) operate on this shared repository concurrently.
+* **Shared Repository Multi-Server Topology**: Multiple server instances (including production clusters and local development nodes) operate on this shared repository concurrently.
 * **Server Role Specialization**:
-  * **Production Compute Node (`peteroa`)**: Dedicated to **heavy batch training (Phase 3 fine-tuning)** and **large-scale architecture scaling (Phase 4)** on its 7x NVIDIA H100 80GB GPUs and SLURM scheduler. **`peteroa` is strictly NOT intended for experimental prototyping or breaking architectural refactors** that could disrupt production batch pipelines.
-  * **Development & Prototyping Nodes**: Dedicated to initial feature design, interactive debugging, and unit testing before scaling onto `peteroa`.
+  * **Production Compute Nodes**: Dedicated to **heavy batch training (Phase 3 fine-tuning)** and **large-scale architecture scaling (Phase 4)** via managed cluster schedulers (such as SLURM). Production compute nodes are strictly NOT intended for experimental prototyping or breaking architectural refactors that could disrupt production batch pipelines.
+  * **Development & Prototyping Nodes**: Dedicated to initial feature design, interactive debugging, and unit testing before scaling onto production compute clusters.
 * **Zero-Disruption Git & Config Isolation**:
   * Host-specific paths, mount overrides, and authentication tokens MUST strictly reside in untracked `.env` files and NEVER be hardcoded in shared scripts.
   * Code changes on production compute nodes must remain minimal, stable, backward-compatible, and focused on execution without unexpected regressions across sibling instances.

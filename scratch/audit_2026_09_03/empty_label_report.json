@@ -1,0 +1,12 @@
+{
+  "tally": {
+    "checked": 400,
+    "empty_on_disk": 0,
+    "empty_after_ras_load": 0,
+    "empty_after_transpose": 0,
+    "empty_after_bbox_crop": 0,
+    "intact": 400,
+    "text_seg_count_mismatch": 0
+  },
+  "offenders": []
+}

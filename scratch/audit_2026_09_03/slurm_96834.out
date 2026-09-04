@@ -1,0 +1,33 @@
+=== EMPTY-LABEL LOADING DIAGNOSTIC ===
+Job ID: 96834 | Node: ih-loica
+[25/400] intact=25 lost=0
+[50/400] intact=50 lost=0
+[75/400] intact=75 lost=0
+[100/400] intact=100 lost=0
+[125/400] intact=125 lost=0
+[150/400] intact=150 lost=0
+[175/400] intact=175 lost=0
+[200/400] intact=200 lost=0
+[225/400] intact=225 lost=0
+[250/400] intact=250 lost=0
+[275/400] intact=275 lost=0
+[300/400] intact=300 lost=0
+[325/400] intact=325 lost=0
+[350/400] intact=350 lost=0
+[375/400] intact=375 lost=0
+[400/400] intact=400 lost=0
+
+========================================================================
+EMPTY-LABEL LOADING DIAGNOSTIC
+========================================================================
+  checked                         400
+  empty_on_disk                     0   (  0.0%)
+  empty_after_ras_load              0   (  0.0%)
+  empty_after_transpose             0   (  0.0%)
+  empty_after_bbox_crop             0   (  0.0%)
+  intact                          400   (100.0%)
+  text_seg_count_mismatch           0   (  0.0%)
+========================================================================
+
+Report written to scratch/audit_2026_09_03/empty_label_report.json
+=== DIAGNOSTIC COMPLETE ===

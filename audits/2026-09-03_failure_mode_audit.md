@@ -43,9 +43,10 @@ load path, which localised `BC-3` to inside MONAI), **96833** and **96970** (sin
 | `LK-3` | Open — protocol note for whoever runs the threshold sweep |
 | `MEM-3` | Deferred — only bites when `--mpr_num_rotations` is raised on `peteroa` |
 
-Two things are landed but **not yet measured**, and should be checked on epoch 1 of the restart:
-`MEM-1`'s effect on the 96.6 min/epoch baseline, and whether train `Obj` and val `Obj` now sit in
-the same range after the `LOSS-1` split.
+`MEM-1` has since been measured and **did not pay off**: job 96971 holds ~2.30 s/it, i.e.
+~115 min/epoch against the 96.6 min pre-fix baseline. The regression is most likely `LOSS-3`'s
+fp32 soft masks, an accepted trade noted in that finding. Still unmeasured: whether train `Obj`
+and val `Obj` now sit in the same range after the `LOSS-1` split — checkable at the end of epoch 1.
 
 **A 16th finding, `BC-3`, was found on 2026-09-04** while diagnosing an anomaly this audit noticed
 but misread. It is the most consequential defect in the set: a third of the training split was
@@ -54,6 +55,42 @@ receiving no positive supervision at all. The audit's own error is worth recordi
 process (354 distinct messages × ~48 repeats), and separately floated a meaningless "91.2% of
 scans" bound from matching volume voxel-counts. Neither number was real; the finding underneath
 them was.
+
+---
+
+## Notation
+
+Two vocabularies appear in this document, in the commit messages that reference it, and in
+`.agents/STATUS.md`.
+
+**Finding IDs** (`BC-1`, `LOSS-3`, …) are labels coined *for this audit*; they exist nowhere in the
+literature. The prefix names the failure mode the finding sits under, and the number is just the
+order of discovery within it, so `LOSS-6` is not more or less severe than `LOSS-1`. Every ID is a
+heading below, so `LOSS-3` is greppable.
+
+| Prefix | Failure mode | IDs |
+|---|---|---|
+| `BC-` | Tensor shape / broadcasting and channel-axis semantics | `BC-1`, `BC-2`, `BC-3` |
+| `LK-` | Data leakage across splits | `LK-1`, `LK-2`, `LK-3` |
+| `MEM-` | Computational-graph memory and step-time cost | `MEM-1`, `MEM-2`, `MEM-3` |
+| `LOSS-` | Custom-loss discrepancies | `LOSS-1` … `LOSS-6` |
+| `OPT-` | Optimiser and weight-decay configuration | `OPT-1` … `OPT-4` |
+| `AUG-` | Augmentation / RNG (outside the five requested modes) | `AUG-1` |
+
+**Loss symbols** (`L_obj`, `L_con`, `L_unl_push`, `L_neg`, `delta_var`, `delta_dist`, `S^31`) are
+*not* coined here — they are SPOCO's, from Wolny et al., CVPR 2022. Their definitions live, in
+descending order of authority per the Knowledge Hierarchy in `.agents/AGENTS.md`:
+
+1. `.agents/shared/gao_wolny_2022_papers_essentials.txt` — the source papers (Tier 1).
+2. `scripts/phase_4_voxtell_spoco/common/losses.py` — module and per-function docstrings carrying
+   the implemented formulas, e.g. `S_k(i) = exp(-||e_i - e(a_k)||^2 / two_sigma)` with
+   `two_sigma = delta_var^2 / -ln(pmaps_threshold)` (Tier 2, and the binding contract for code).
+3. `.agents/shared/MASTER_PLAN.md`, Phase 4 — the roadmap-level description.
+
+One exception: **`L_neg` is new**. Before the `LOSS-1` fix there was no separate symbol, because
+the null-target penalty on confirmed-absent findings was averaged into `L_obj` — which is precisely
+what `LOSS-1` is about. It is defined in the `compute_spoco_total_loss` docstring and in
+`logs/phase_4_voxtell_spoco/exp_001_voxtell_spoco/eval.md`.
 
 ---
 

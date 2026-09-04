@@ -295,8 +295,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--num_workers", type=int, default=None, help="DataLoader worker count (None for server-agnostic auto)")
     parser.add_argument("--dry_run", action="store_true", help="Execute single-batch verification step")
-    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases telemetry logging")
-    parser.add_argument("--wandb_project", type=str, default="rexgroundingct", help="WandB project name")
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        default=True,
+        help="Enable Weights & Biases telemetry logging (default: True)",
+    )
+    parser.add_argument(
+        "--no_wandb",
+        dest="wandb",
+        action="store_false",
+        help="Disable Weights & Biases telemetry logging",
+    )
+    parser.add_argument(
+        "--wandb_project",
+        type=str,
+        default=os.getenv("WANDB_PROJECT", "rexgroundingct-challenge"),
+        help="WandB project name",
+    )
     return parser.parse_args()
 
 
@@ -337,6 +353,7 @@ def main() -> None:
                 project=args.wandb_project,
                 name="exp_001_voxtell_spoco",
                 config=vars(args),
+                resume="allow",
             )
             logger.info("Initialized Weights & Biases telemetry.")
         except Exception as e:
@@ -670,6 +687,19 @@ def main() -> None:
                         "l_push": f"{l_push.item():.4f}",
                         "l_neg": f"{l_neg.item():.4f}",
                     })
+                    if args.wandb and total_steps % 10 == 0:
+                        try:
+                            import wandb
+                            wandb.log({
+                                "step/loss": loss.item(),
+                                "step/obj_loss": l_obj.item(),
+                                "step/con_loss": l_con.item(),
+                                "step/push_loss": l_push.item(),
+                                "step/neg_loss": l_neg.item(),
+                                "step/global_step": total_steps,
+                            })
+                        except Exception:
+                            pass
 
             # Release the embedding volumes before the next iteration's forward allocates. Each is
             # (B, N, 32, Z, Y, X) -- ~1.36 GB at B=1, N=3, 192^3 -- and without this both stay
@@ -798,6 +828,12 @@ def main() -> None:
 
     if rank == 0:
         logger.info(f"Phase 4 Exp 001 Training Completed across {args.epochs} epochs. Best Val Loss: {best_val_loss:.4f}")
+        if args.wandb:
+            try:
+                import wandb
+                wandb.finish()
+            except Exception:
+                pass
 
     cleanup_distributed()
 

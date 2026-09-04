@@ -26,6 +26,8 @@ if str(ROOT_DIR) not in sys.path:
 
 from scripts.phase_3_voxtell_finetuning.exp_003_mpr_loss import (
     compute_mpr_consistency_loss,
+    _random_rotation_matrix,
+    _rotate_volume,
 )
 
 
@@ -35,15 +37,28 @@ def test_mpr_identity_zero_loss():
         test_mpr_identity_zero_loss() -> None
 
     Objective:
-        Verify that identical Student and Teacher predictions yield an exact 0.0 MPR loss.
+        Verify that identical Student and Teacher predictions yield an exact 0.0 MPR loss
+        under both the legacy MSE mode and identical binary predictions in SOUSA Dice mode.
     """
     B, F_dim, Z, Y, X = 1, 1, 16, 16, 16
     student_probs = torch.rand(B, F_dim, Z, Y, X)
     teacher_probs = student_probs.clone()
     roi_mask = torch.zeros(B, F_dim, Z, Y, X, dtype=torch.bool)
 
-    loss = compute_mpr_consistency_loss(student_probs, teacher_probs, roi_mask)
-    assert torch.isclose(loss, torch.tensor(0.0), atol=1e-7)
+    # 1. Legacy MSE mode
+    loss_mse = compute_mpr_consistency_loss(
+        student_probs, teacher_probs, roi_mask,
+        num_rotations=1, rotation_mode="none", projection_loss="mse",
+    )
+    assert torch.isclose(loss_mse, torch.tensor(0.0), atol=1e-7)
+
+    # 2. SOUSA Soft Dice mode on identical binary predictions
+    binary_probs = (torch.rand(B, F_dim, Z, Y, X) > 0.5).float()
+    loss_dice = compute_mpr_consistency_loss(
+        binary_probs, binary_probs.clone(), roi_mask,
+        num_rotations=1, rotation_mode="none", projection_loss="dice",
+    )
+    assert torch.isclose(loss_dice, torch.tensor(0.0), atol=1e-5)
 
 
 def test_mpr_roi_mask_isolation():
@@ -66,7 +81,10 @@ def test_mpr_roi_mask_isolation():
     roi_mask = torch.zeros(B, F_dim, Z, Y, X, dtype=torch.bool)
     roi_mask[:, :, 5:11, 5:11, 5:11] = True
 
-    loss = compute_mpr_consistency_loss(student_probs, teacher_probs, roi_mask)
+    loss = compute_mpr_consistency_loss(
+        student_probs, teacher_probs, roi_mask,
+        num_rotations=1, rotation_mode="none", projection_loss="mse",
+    )
     assert torch.isclose(loss, torch.tensor(0.0), atol=1e-7)
 
 
@@ -95,8 +113,11 @@ def test_mpr_dimension_amplification():
     voxel_mse = F.mse_loss(student_probs, teacher_probs).item()
     expected_voxel_mse = 1.0 / total_voxels  # 1 / 4096 ≈ 0.00024414
 
-    # 2. MPR Loss
-    mpr_loss = compute_mpr_consistency_loss(student_probs, teacher_probs, roi_mask).item()
+    # 2. MPR Loss (under MSE projection)
+    mpr_loss = compute_mpr_consistency_loss(
+        student_probs, teacher_probs, roi_mask,
+        num_rotations=1, rotation_mode="none", projection_loss="mse",
+    ).item()
     expected_mpr_loss = 1.0 / proj_pixels    # 1 / 256 ≈ 0.00390625
 
     assert abs(voxel_mse - expected_voxel_mse) < 1e-7
@@ -139,8 +160,14 @@ def test_mpr_dispersed_vs_clustered_penalty():
     assert abs(voxel_mse_clustered - voxel_mse_dispersed) < 1e-7
 
     # However, MPR loss penalizes the dispersed configuration significantly more!
-    mpr_clustered = compute_mpr_consistency_loss(student_clustered, teacher_probs, roi_mask).item()
-    mpr_dispersed = compute_mpr_consistency_loss(student_dispersed, teacher_probs, roi_mask).item()
+    mpr_clustered = compute_mpr_consistency_loss(
+        student_clustered, teacher_probs, roi_mask,
+        num_rotations=1, rotation_mode="none", projection_loss="mse",
+    ).item()
+    mpr_dispersed = compute_mpr_consistency_loss(
+        student_dispersed, teacher_probs, roi_mask,
+        num_rotations=1, rotation_mode="none", projection_loss="mse",
+    ).item()
 
     # In clustered: axial max collapses all 4 into 1 pixel!
     # In dispersed: all 3 projections see 4 distinct pixels!
@@ -156,17 +183,20 @@ def test_mpr_gradient_flow():
 
     Objective:
         Verify gradient backpropagation: non-zero gradients in unannotated background,
-        strictly zero gradient inside the annotated ROI mask.
+        strictly zero gradient inside the annotated ROI mask, and zero gradients leaking to teacher.
     """
     B, F_dim, Z, Y, X = 1, 1, 16, 16, 16
     student_probs = torch.full((B, F_dim, Z, Y, X), 0.5, requires_grad=True)
-    teacher_probs = torch.zeros(B, F_dim, Z, Y, X)
+    teacher_probs = torch.zeros(B, F_dim, Z, Y, X, requires_grad=True)
 
     # ROI mask on the first half of Z
     roi_mask = torch.zeros(B, F_dim, Z, Y, X, dtype=torch.bool)
     roi_mask[:, :, :8, :, :] = True
 
-    loss = compute_mpr_consistency_loss(student_probs, teacher_probs, roi_mask)
+    loss = compute_mpr_consistency_loss(
+        student_probs, teacher_probs, roi_mask,
+        num_rotations=1, rotation_mode="none", projection_loss="mse",
+    )
     loss.backward()
 
     assert student_probs.grad is not None
@@ -177,6 +207,46 @@ def test_mpr_gradient_flow():
     # Outside ROI (background): gradients must be non-zero
     bg_grads = student_probs.grad[:, :, 8:, :, :]
     assert torch.any(bg_grads != 0.0)
+
+    # Critical Teacher Gradient Isolation: Teacher MUST NOT receive gradients
+    assert teacher_probs.grad is None or torch.all(teacher_probs.grad == 0.0)
+
+
+def test_sousa_rotation_matrix_orthogonality():
+    """
+    Signature:
+        test_sousa_rotation_matrix_orthogonality() -> None
+
+    Objective:
+        Verify that SOUSA 3D rotation matrices are strictly orthonormal (R @ R.T == I, det(R) == 1.0).
+    """
+    device = torch.device("cpu")
+    for _ in range(10):
+        rot = _random_rotation_matrix(device=device)
+        assert rot.shape == (3, 3)
+        eye = torch.eye(3, dtype=torch.float32, device=device)
+        assert torch.allclose(rot @ rot.T, eye, atol=1e-5)
+        det = torch.det(rot)
+        assert torch.isclose(det, torch.tensor(1.0, device=device), atol=1e-5)
+
+
+def test_rotate_volume_shape_and_bounds():
+    """
+    Signature:
+        test_rotate_volume_shape_and_bounds() -> None
+
+    Objective:
+        Verify _rotate_volume preserves tensor shape and respects intensity range [0, 1].
+    """
+    device = torch.device("cpu")
+    B, F_dim, Z, Y, X = 1, 2, 16, 16, 16
+    vol = torch.rand(B, F_dim, Z, Y, X, device=device)
+    rot = _random_rotation_matrix(device=device)
+    rotated = _rotate_volume(vol, rot)
+
+    assert rotated.shape == vol.shape
+    assert (rotated >= -1e-5).all()
+    assert (rotated <= 1.0 + 1e-5).all()
 
 
 def test_dice_vs_mpr_spatial_invariance_and_monotonicity():
@@ -226,8 +296,11 @@ def test_dice_vs_mpr_spatial_invariance_and_monotonicity():
         # 3D Voxel-wise MSE
         voxel_mse = F.mse_loss(student, teacher)
 
-        # MPR Consistency Loss
-        mpr_loss = compute_mpr_consistency_loss(student, teacher, roi_mask)
+        # MPR Consistency Loss (orthogonal 3-plane projection)
+        mpr_loss = compute_mpr_consistency_loss(
+            student, teacher, roi_mask,
+            num_rotations=1, rotation_mode="none", projection_loss="mse",
+        )
 
         dice_losses.append(dice_loss.item())
         voxel_mses.append(voxel_mse.item())
